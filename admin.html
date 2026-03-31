@@ -1,0 +1,2910 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="fontawesome/all.min.css">
+  <title>Attendance Admin</title>
+  <style>
+    .app {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 24px 18px 48px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid rgba(215,227,239,0.96);
+      border-radius: 26px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .head, .actions, .gate-grid, .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .actions-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    .head {
+      padding: 24px 26px;
+      align-items: flex-start;
+    }
+    .head-main {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .head-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, rgba(102,51,153,0.18), rgba(51,33,75,0.22));
+      color: var(--primary);
+      font-size: 24px;
+      box-shadow:
+        inset 0 0 0 1px rgba(102,51,153,0.1),
+        0 8px 25px -8px rgba(102,51,153,0.45);
+    }
+    .head h1, .card h2 { margin: 0; }
+    .meta {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .status {
+      padding: 13px 14px;
+      border-radius: 16px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      border: 1px solid rgba(102,51,153,0.16);
+      font-weight: 700;
+      line-height: 1.5;
+    }
+    .status.ok { background: #daf4e5; color: #0b7a4b; border-color: #b7e2c7; }
+    .status.warn { background: #fff1cf; color: #8f640a; border-color: #edd48d; }
+    .status.err { background: #fde5db; color: #ab3310; border-color: #efc1af; }
+    .field {
+      display: grid;
+      gap: 6px;
+      min-width: 220px;
+    }
+    label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    input, select, button, a {
+      font: inherit;
+    }
+    input, select, button {
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, opacity 0.18s ease;
+    }
+    input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible {
+      outline: 0;
+      border-color: rgba(15,76,129,0.55);
+      box-shadow: 0 0 0 3px rgba(15,76,129,0.14);
+    }
+    input, select {
+      width: 100%;
+      min-height: 50px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0 14px;
+      background: var(--surface);
+      color: var(--text);
+    }
+    select[multiple] {
+      min-height: 220px;
+      padding: 12px;
+      border-radius: 18px;
+    }
+    .btn, .link-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 50px;
+      padding: 0 18px;
+      border-radius: 14px;
+      border: 0;
+      cursor: pointer;
+      font-weight: 800;
+      text-decoration: none;
+      box-shadow: none;
+    }
+    .btn:disabled, .mini-btn:disabled, .admin-side-tab:disabled {
+      opacity: 0.56;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .primary {
+      color: #fff;
+      background: var(--primary);
+      box-shadow: 0 8px 25px -8px rgba(102,51,153,0.5);
+    }
+    .light, .link-btn {
+      color: var(--primary-dark);
+      background: rgba(255,255,255,0.94);
+      border: 1px solid var(--line);
+    }
+    .grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(280px, 1fr));
+    }
+    .config-diagnostics {
+      display: grid;
+      gap: 14px;
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+    .config-diagnostics h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+    .diag-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .diag-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .diag-card {
+      display: grid;
+      gap: 14px;
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    .diag-card[data-state="warn"] {
+      border-color: #edd48d;
+      background: #fffaf0;
+    }
+    .diag-card[data-state="err"] {
+      border-color: #efc1af;
+      background: #fff7f3;
+    }
+    .diag-card[data-state="loading"] {
+      opacity: 0.72;
+    }
+    .diag-head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+    .diag-head strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.2;
+    }
+    .diag-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .diag-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--primary-dark);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .diag-badge[data-state="ok"] {
+      background: #daf4e5;
+      border-color: #b7e2c7;
+      color: #0b7a4b;
+    }
+    .diag-badge[data-state="warn"] {
+      background: #fff1cf;
+      border-color: #edd48d;
+      color: #8f640a;
+    }
+    .diag-badge[data-state="err"] {
+      background: #fde5db;
+      border-color: #efc1af;
+      color: #ab3310;
+    }
+    .diag-url {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      word-break: break-all;
+    }
+    .diag-kpis {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .diag-kpi {
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+    }
+    .diag-kpi strong {
+      display: block;
+      font-size: 22px;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+    .diag-kpi span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .diag-section {
+      display: grid;
+      gap: 8px;
+    }
+    .diag-section h4 {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .diag-chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .diag-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .diag-chip.is-ok {
+      border-color: #b7e2c7;
+      background: #f0fbf5;
+    }
+    .diag-chip.is-warn {
+      border-color: #edd48d;
+      background: #fff8e6;
+      color: #8f640a;
+    }
+    .diag-preview {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    }
+    .diag-preview-item {
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    .diag-preview-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+    .diag-preview-item strong {
+      display: block;
+      font-size: 13px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+    .diag-empty {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .span-all {
+      grid-column: 1 / -1;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .chip, .date-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--primary-dark);
+      font-weight: 700;
+    }
+    .date-chip {
+      cursor: pointer;
+    }
+    .preset-list {
+      display: grid;
+      gap: 12px;
+    }
+    .dropdown-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .dropdown-card {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: minmax(220px, 280px) 1fr auto;
+      align-items: start;
+      padding: 16px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,251,255,0.94));
+    }
+    .dropdown-inline {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    .dropdown-inline input {
+      flex: 1 1 220px;
+    }
+    .group-category-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .group-category-card {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: minmax(220px, 280px) 1fr auto;
+      align-items: start;
+      padding: 16px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,251,255,0.94));
+    }
+    .group-category-card select[multiple] {
+      min-height: 180px;
+    }
+    .chip-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--primary-dark);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .preset-card {
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      align-items: start;
+      padding: 18px;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background:
+        radial-gradient(circle at top right, var(--graph-accent-soft), transparent 30%),
+        linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,251,255,0.94));
+    }
+    .preset-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 4px;
+      background: linear-gradient(90deg, var(--graph-accent), rgba(255,255,255,0));
+    }
+    .preset-card::after {
+      content: "";
+      position: absolute;
+      left: -20px;
+      bottom: -28px;
+      width: 112px;
+      height: 112px;
+      border-radius: 999px;
+      background: var(--graph-accent-soft);
+      filter: blur(10px);
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .preset-card-head {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .preset-card-meta {
+      display: grid;
+      gap: 6px;
+    }
+    .preset-card-kicker {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.88);
+      border: 1px solid rgba(223,214,238,0.96);
+      color: var(--graph-accent);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .preset-card-summary {
+      font-size: 19px;
+      font-weight: 900;
+      color: var(--primary-dark);
+      line-height: 1.2;
+    }
+    .preset-card-sub {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+    .preset-card .field {
+      position: relative;
+      z-index: 1;
+      padding: 12px;
+      border-radius: 18px;
+      border: 1px solid rgba(228,231,238,0.96);
+      background: rgba(255,255,255,0.84);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.55);
+    }
+    .preset-quick-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      align-items: start;
+    }
+    .preset-advanced {
+      grid-column: 1 / -1;
+      border: 1px solid rgba(223,214,238,0.96);
+      border-radius: 20px;
+      background: rgba(248,245,252,0.92);
+      overflow: hidden;
+    }
+    .preset-advanced[open] {
+      background: rgba(255,255,255,0.98);
+    }
+    .preset-advanced > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 13px 14px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--primary-dark);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .preset-advanced > summary::-webkit-details-marker {
+      display: none;
+    }
+    .preset-advanced > summary::before {
+      content: "⚙";
+      font-size: 14px;
+    }
+    .preset-advanced > summary::after {
+      content: "▾";
+      font-size: 12px;
+      transition: transform 0.2s ease;
+    }
+    .preset-advanced[open] > summary::after {
+      transform: rotate(180deg);
+    }
+    .preset-advanced-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      padding: 0 14px 14px;
+      border-top: 1px solid rgba(223,214,238,0.96);
+    }
+    .preset-note {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+    .preset-value-field.is-disabled {
+      opacity: 0.68;
+    }
+    .preset-value-field.is-disabled select {
+      background: #f3f6f9;
+    }
+    .field-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .field-head label {
+      margin: 0;
+    }
+    .mini-btn {
+      min-height: 36px;
+      padding: 0 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.96);
+      color: var(--primary-dark);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .admin-side-tabs {
+      display: grid;
+      gap: 4px;
+    }
+    .admin-side-tab {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      text-align: right;
+      font: inherit;
+      cursor: pointer;
+    }
+    .tab-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.1rem;
+      height: 1.1rem;
+      margin-inline-start: 20px;
+      font-size: 15px;
+      opacity: 0.82;
+    }
+    .admin-side-tab.active .tab-icon {
+      opacity: 1;
+    }
+    .admin-overview-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      margin-top: 14px;
+    }
+    .overview-card {
+      padding: 16px 18px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background:
+        radial-gradient(circle at top right, rgba(102,51,153,0.14), transparent 34%),
+        linear-gradient(180deg, #ffffff 0%, #faf8fd 100%);
+      box-shadow: var(--shadow-sm);
+    }
+    .overview-card strong {
+      display: block;
+      font-size: 28px;
+      line-height: 1;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+    .overview-card span {
+      display: block;
+      color: var(--primary-dark);
+      font-size: 13px;
+      font-weight: 900;
+      margin-bottom: 4px;
+    }
+    .overview-card small {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      font-weight: 700;
+    }
+    .overview-card.is-dirty {
+      background:
+        radial-gradient(circle at top right, rgba(255,193,7,0.16), transparent 36%),
+        linear-gradient(180deg, #fffbf1 0%, #fffdfa 100%);
+      border-color: rgba(255,193,7,0.22);
+    }
+    .overview-card.is-ok {
+      background:
+        radial-gradient(circle at top right, rgba(34,197,94,0.14), transparent 36%),
+        linear-gradient(180deg, #effbf5 0%, #fbfffd 100%);
+      border-color: rgba(34,197,94,0.22);
+    }
+    .section-note {
+      padding: 13px 14px;
+      border-radius: 18px;
+      background: rgba(248,251,255,0.94);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      font-weight: 600;
+      border: 1px solid var(--line);
+    }
+    .widget-gallery {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      margin-bottom: 18px;
+    }
+    .gallery-btn,
+    .preset-card.dashboard-card {
+      --graph-accent: var(--primary);
+      --graph-accent-soft: rgba(102,51,153,0.14);
+    }
+    .gallery-btn[data-graph-type="bar"],
+    .preset-card[data-chart-type="bar"] { --graph-accent: #2563eb; --graph-accent-soft: rgba(37,99,235,0.16); }
+    .gallery-btn[data-graph-type="stacked"],
+    .preset-card[data-chart-type="stacked"] { --graph-accent: #7c3aed; --graph-accent-soft: rgba(124,58,237,0.16); }
+    .gallery-btn[data-graph-type="line"],
+    .preset-card[data-chart-type="line"] { --graph-accent: #0f766e; --graph-accent-soft: rgba(15,118,110,0.16); }
+    .gallery-btn[data-graph-type="area"],
+    .preset-card[data-chart-type="area"] { --graph-accent: #0891b2; --graph-accent-soft: rgba(8,145,178,0.16); }
+    .gallery-btn[data-graph-type="pie"],
+    .preset-card[data-chart-type="pie"] { --graph-accent: #d97706; --graph-accent-soft: rgba(217,119,6,0.16); }
+    .gallery-btn[data-graph-type="donut"],
+    .preset-card[data-chart-type="donut"] { --graph-accent: #db2777; --graph-accent-soft: rgba(219,39,119,0.16); }
+    .gallery-btn[data-graph-type="radar"],
+    .preset-card[data-chart-type="radar"] { --graph-accent: #7c3aed; --graph-accent-soft: rgba(124,58,237,0.14); }
+    .gallery-btn[data-graph-type="radial"],
+    .preset-card[data-chart-type="radial"] { --graph-accent: #4f46e5; --graph-accent-soft: rgba(79,70,229,0.16); }
+    .gallery-btn[data-graph-type="progress"],
+    .preset-card[data-chart-type="progress"] { --graph-accent: #16a34a; --graph-accent-soft: rgba(22,163,74,0.16); }
+    .gallery-btn[data-graph-type="polar"],
+    .preset-card[data-chart-type="polar"] { --graph-accent: #ea580c; --graph-accent-soft: rgba(234,88,12,0.16); }
+    .gallery-btn[data-graph-type="heatmap"],
+    .preset-card[data-chart-type="heatmap"] { --graph-accent: #be185d; --graph-accent-soft: rgba(190,24,93,0.16); }
+    .gallery-btn[data-graph-type="table"],
+    .preset-card[data-chart-type="table"] { --graph-accent: #475569; --graph-accent-soft: rgba(71,85,105,0.16); }
+    .gallery-btn[data-graph-type="metric"],
+    .preset-card[data-chart-type="metric"] { --graph-accent: #33214b; --graph-accent-soft: rgba(51,33,75,0.14); }
+    .graph-studio-builder,
+    .graph-studio-preview,
+    #adminDashboardSection {
+      background:
+        radial-gradient(circle at top left, rgba(102,51,153,0.08), transparent 34%),
+        linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,248,253,0.98));
+    }
+    .graph-studio-builder > .toolbar,
+    .graph-studio-preview > .toolbar,
+    #adminDashboardSection > .toolbar {
+      margin-bottom: 18px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid rgba(228,231,238,0.96);
+    }
+    .gallery-btn {
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      align-content: end;
+      gap: 10px;
+      min-height: 118px;
+      padding: 18px;
+      padding-top: 62px;
+      border-radius: 24px;
+      border: 1px solid rgba(215,227,239,0.96);
+      background: linear-gradient(180deg, #fff 0%, #faf8fd 100%);
+      color: var(--text);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: right;
+      box-shadow: 0 16px 30px rgba(15,23,42,0.08);
+    }
+    .gallery-btn::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at top right, var(--graph-accent-soft), transparent 38%),
+        linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,248,253,0.98));
+      pointer-events: none;
+    }
+    .gallery-btn::after {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 40px;
+      height: 40px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(223,214,238,0.96);
+      color: var(--graph-accent);
+      font-size: 18px;
+      font-weight: 900;
+      box-shadow: 0 12px 20px rgba(15,23,42,0.08);
+      pointer-events: none;
+    }
+    .gallery-btn[data-graph-type="bar"]::after { content: "\25A5"; }
+    .gallery-btn[data-graph-type="stacked"]::after { content: "\25A4"; }
+    .gallery-btn[data-graph-type="line"]::after { content: "\223F"; }
+    .gallery-btn[data-graph-type="area"]::after { content: "\2581"; }
+    .gallery-btn[data-graph-type="pie"]::after { content: "\25D4"; }
+    .gallery-btn[data-graph-type="donut"]::after { content: "\25CC"; }
+    .gallery-btn[data-graph-type="radar"]::after { content: "\2726"; }
+    .gallery-btn[data-graph-type="radial"]::after { content: "\25D6"; }
+    .gallery-btn[data-graph-type="progress"]::after { content: "\25B0"; }
+    .gallery-btn[data-graph-type="polar"]::after { content: "\25CD"; }
+    .gallery-btn[data-graph-type="heatmap"]::after { content: "\2592"; }
+    .gallery-btn[data-graph-type="table"]::after { content: "\2637"; }
+    .gallery-btn[data-graph-type="metric"]::after { content: "#"; }
+    .gallery-btn strong {
+      position: relative;
+      z-index: 1;
+      display: block;
+      max-width: calc(100% - 46px);
+      font-size: 15px;
+      color: var(--primary-dark);
+    }
+    .gallery-btn:hover {
+      transform: translateY(-3px);
+      border-color: rgba(102,51,153,0.26);
+      box-shadow: 0 22px 40px rgba(15,23,42,0.12);
+    }
+    .graph-preview-shell,
+    .units-shell {
+      display: grid;
+      gap: 14px;
+    }
+    .graph-studio-layout {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: 1fr;
+      align-items: start;
+    }
+    .graph-studio-builder,
+    .graph-studio-preview {
+      margin-bottom: 0;
+    }
+    .graph-studio-preview {
+      position: static;
+      background:
+        radial-gradient(circle at top right, rgba(102,51,153,0.14), transparent 28%),
+        linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,248,253,0.98) 100%);
+    }
+    .graph-studio-layout .field,
+    .preset-card .field {
+      min-width: 0;
+    }
+    .preview-tip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 0 12px;
+      border-radius: 999px;
+      background: var(--surface-muted);
+      color: var(--primary);
+      border: 1px solid rgba(102,51,153,0.16);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .admin-savebar {
+      position: static;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+    .admin-savebar-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      font-weight: 700;
+    }
+    dialog {
+      width: min(100%, 560px);
+      border: 0;
+      border-radius: 24px;
+      padding: 0;
+      box-shadow: 0 28px 54px rgba(19,44,68,0.22);
+    }
+    dialog::backdrop {
+      background: rgba(10, 24, 39, 0.4);
+    }
+    .dialog-card {
+      padding: 22px;
+    }
+    .dialog-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .dialog-head h2 {
+      margin: 0;
+    }
+    .dialog-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1fr;
+    }
+    .dialog-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .save-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      background: var(--primary-soft);
+      color: var(--primary);
+      border: 1px solid rgba(102,51,153,0.16);
+    }
+    .save-indicator.is-dirty {
+      background: #fff1cf;
+      color: #8f640a;
+      border-color: #edd48d;
+    }
+    .save-indicator.is-ok {
+      background: #daf4e5;
+      color: #0b7a4b;
+      border-color: #b7e2c7;
+    }
+    .table-card {
+      overflow: auto;
+      padding: 0 20px 20px;
+      border: 1px solid #e6eaef;
+      border-radius: 20px;
+      background: #fff;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+    }
+    .table-grid-shell {
+      width: max-content;
+      min-width: 100%;
+      background: #fff;
+      border: 1px solid #e9e9e9;
+      border-radius: 16px;
+      box-shadow: 0 1px 1px rgba(0,0,0,.05);
+    }
+    .admin-table {
+      width: 100%;
+      min-width: 900px;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 12px;
+      color: #566787;
+    }
+    .admin-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #fff;
+      padding: 10px 12px;
+      border-bottom: 1px solid #e9e9e9;
+      text-align: right;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+    .admin-table tbody td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #e9e9e9;
+      vertical-align: middle;
+    }
+    .admin-table tbody tr:nth-child(even) td {
+      background: #fcfcfc;
+    }
+    .admin-table tbody tr:hover td {
+      background: #f5f5f5;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #daf4e5;
+      color: #0b7a4b;
+      border: 1px solid #b7e2c7;
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+    .preset-card .span-all {
+      grid-column: 1 / -1;
+    }
+    /* Theme alignment */
+    .app {
+      max-width: 1440px;
+      padding: 28px 22px 56px;
+    }
+    .card,
+    .dropdown-card,
+    .group-category-card,
+    .preset-card,
+    .overview-card,
+    .gallery-btn,
+    .graph-studio-preview,
+    .admin-savebar,
+    .table-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: none;
+    }
+    .head {
+      padding: 24px;
+    }
+    .head-icon {
+      background: var(--surface-subtle);
+      color: var(--primary-dark);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: none;
+    }
+    input:focus-visible,
+    select:focus-visible,
+    button:focus-visible,
+    a:focus-visible {
+      border-color: var(--primary);
+      box-shadow: var(--shadow-focus);
+    }
+    input,
+    select {
+      background: #fff;
+      border-color: var(--border);
+    }
+    .btn,
+    .link-btn,
+    .mini-btn {
+      border-radius: 10px;
+    }
+    .primary {
+      background: var(--primary);
+      box-shadow: none;
+    }
+    .light,
+    .link-btn {
+      background: #fff;
+      border-color: var(--border);
+    }
+    .dropdown-card,
+    .group-category-card,
+    .admin-savebar {
+      background: #fff;
+    }
+    .chip,
+    .date-chip,
+    .chip-btn,
+    .preview-tip,
+    .save-indicator {
+      border-radius: 8px;
+      background: var(--surface-subtle);
+      border-color: var(--border);
+      color: var(--primary-dark);
+      box-shadow: none;
+    }
+    .status-pill {
+      border-radius: 8px;
+      box-shadow: none;
+    }
+    .graph-studio-builder,
+    .graph-studio-preview,
+    #adminDashboardSection {
+      background: #fff;
+    }
+    .preset-card {
+      overflow: visible;
+      border-radius: 14px;
+      background: #fff;
+      border-inline-start: 4px solid var(--graph-accent);
+    }
+    .preset-card::before,
+    .preset-card::after,
+    .gallery-btn::before {
+      content: none;
+    }
+    .preset-card-kicker {
+      border-radius: 6px;
+      background: var(--surface-subtle);
+      border-color: var(--border);
+      color: var(--primary-dark);
+    }
+    .preset-card .field,
+    .graph-studio-layout .field {
+      background: var(--surface-subtle);
+      border-color: var(--border);
+      border-radius: 10px;
+      box-shadow: none;
+    }
+    .preset-advanced {
+      border-color: var(--border);
+      border-radius: 12px;
+      background: var(--surface-subtle);
+    }
+    .preset-advanced[open] {
+      background: #fff;
+    }
+    .overview-card {
+      background: #fff;
+      border-inline-start: 4px solid var(--primary);
+    }
+    .overview-card.is-dirty {
+      background: #fff;
+      border-color: rgba(255,193,7,0.28);
+      border-inline-start-color: #d8a216;
+    }
+    .overview-card.is-ok {
+      background: #fff;
+      border-color: rgba(34,197,94,0.28);
+      border-inline-start-color: #1f8f4d;
+    }
+    .gallery-btn {
+      min-height: 96px;
+      padding: 16px 18px;
+      padding-top: 16px;
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: none;
+    }
+    .gallery-btn::after {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      box-shadow: none;
+    }
+    .gallery-btn strong {
+      max-width: 100%;
+      color: var(--text);
+    }
+    .gallery-btn:hover {
+      transform: none;
+      border-color: var(--primary);
+      box-shadow: none;
+    }
+    .admin-savebar {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: none;
+    }
+    .preview-tip,
+    .section-note {
+      background: var(--surface-muted);
+      border-color: var(--border);
+      color: var(--text-secondary);
+      border-radius: 10px;
+    }
+    .status,
+    .save-indicator {
+      border-radius: 10px;
+    }
+    dialog {
+      border-radius: 16px;
+      box-shadow: var(--shadow-modal);
+    }
+    .table-card {
+      box-shadow: none;
+      border-radius: 14px;
+    }
+    .table-grid-shell {
+      border-radius: 12px;
+      box-shadow: none;
+    }
+    dialog::backdrop {
+      background: rgba(15,23,42,0.36);
+    }
+    .dialog-card {
+      padding: 24px;
+    }
+    .table-card {
+      border-radius: 18px;
+    }
+    .admin-table thead th {
+      background: #fff;
+      border-bottom: 1px solid #e9e9e9;
+    }
+    .admin-table tbody td {
+      border-bottom-color: #e9e9e9;
+    }
+    .admin-table tbody tr:nth-child(even) td {
+      background: #fcfcfc;
+    }
+    .admin-table tbody tr:hover td {
+      background: #f5f5f5;
+    }
+    .hidden {
+      display: none !important;
+    }
+    @media (min-width: 1480px) {
+      .graph-studio-layout {
+        grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr);
+      }
+      .graph-studio-preview {
+        position: sticky;
+        top: 18px;
+      }
+    }
+    @media (max-width: 980px) {
+      .grid, .preset-card, .dropdown-card, .group-category-card { grid-template-columns: 1fr; }
+      .preset-quick-grid,
+      .preset-advanced-grid { grid-template-columns: 1fr; }
+      .graph-studio-layout { grid-template-columns: 1fr; }
+      .graph-studio-preview { position: static; }
+      .head { padding: 18px; }
+      .admin-table {
+        min-width: 680px;
+      }
+    }
+    body[data-page="admin"] .app {
+      padding: 20px 18px 48px;
+    }
+    body[data-page="admin"] #adminPanel {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    body[data-page="admin"] #adminPanel > * {
+      margin: 0;
+    }
+    body[data-page="admin"] .card {
+      padding: 18px;
+      border-radius: 12px;
+      border-color: #e1e5ec;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    body[data-page="admin"] .head,
+    body[data-page="admin"] .toolbar,
+    body[data-page="admin"] .actions,
+    body[data-page="admin"] .gate-grid {
+      gap: 10px;
+    }
+    body[data-page="admin"] .head {
+      padding: 18px 20px;
+      align-items: center;
+    }
+    body[data-page="admin"] .head .actions {
+      display: none;
+    }
+    body[data-page="admin"] .head-main {
+      gap: 12px;
+    }
+    body[data-page="admin"] .head-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: #eef1ff;
+      border: 1px solid #dbe1f8;
+      color: #4f52b2;
+      box-shadow: none;
+      font-size: 18px;
+    }
+    body[data-page="admin"] .meta,
+    body[data-page="admin"] .diag-note,
+    body[data-page="admin"] .diag-head p,
+    body[data-page="admin"] .section-note,
+    body[data-page="admin"] .preview-tip,
+    body[data-page="admin"] .records-meta {
+      color: #605e5c;
+    }
+    body[data-page="admin"] label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #605e5c;
+    }
+    body[data-page="admin"] input,
+    body[data-page="admin"] select {
+      min-height: 42px;
+      padding: 10px 12px;
+      border: 1px solid #d1d7e0;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    body[data-page="admin"] select[multiple] {
+      min-height: 200px;
+      padding: 10px;
+      border-radius: 10px;
+    }
+    body[data-page="admin"] .btn,
+    body[data-page="admin"] .link-btn {
+      min-height: 40px;
+      padding: 0 14px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .light,
+    body[data-page="admin"] .link-btn {
+      color: #252423;
+      background: transparent;
+      border-color: transparent;
+    }
+    body[data-page="admin"] .light:hover,
+    body[data-page="admin"] .link-btn:hover,
+    body[data-page="admin"] .mini-btn:hover {
+      background: #eff3f8;
+      border-color: transparent;
+    }
+    body[data-page="admin"] .primary {
+      box-shadow: none;
+    }
+    body[data-page="admin"] .mini-btn {
+      min-height: 32px;
+      border-radius: 8px;
+      border-color: transparent;
+      background: transparent;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    body[data-page="admin"] .toolbar > .btn.light,
+    body[data-page="admin"] .actions-group > .btn.light {
+      min-height: 32px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    body[data-page="admin"] .status,
+    body[data-page="admin"] .save-indicator {
+      border-radius: 8px;
+      font-weight: 600;
+    }
+    body[data-page="admin"] .diag-card,
+    body[data-page="admin"] .dropdown-card,
+    body[data-page="admin"] .group-category-card,
+    body[data-page="admin"] .preset-card,
+    body[data-page="admin"] .overview-card,
+    body[data-page="admin"] .graph-preview-shell,
+    body[data-page="admin"] .gallery-btn,
+    body[data-page="admin"] .admin-savebar,
+    body[data-page="admin"] .table-card {
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .diag-card,
+    body[data-page="admin"] .dropdown-card,
+    body[data-page="admin"] .group-category-card,
+    body[data-page="admin"] .preset-card,
+    body[data-page="admin"] .overview-card,
+    body[data-page="admin"] .gallery-btn,
+    body[data-page="admin"] .table-card {
+      border: 1px solid #e1e5ec;
+    }
+    body[data-page="admin"] .diag-card[data-state="warn"] {
+      background: #fffaf2;
+      border-color: #edd9a3;
+    }
+    body[data-page="admin"] .diag-card[data-state="err"] {
+      background: #fff6f4;
+      border-color: #efc9bd;
+    }
+    body[data-page="admin"] .diag-badge,
+    body[data-page="admin"] .diag-chip,
+    body[data-page="admin"] .chip,
+    body[data-page="admin"] .date-chip,
+    body[data-page="admin"] .chip-btn {
+      border-radius: 8px;
+      font-weight: 600;
+    }
+    body[data-page="admin"] .diag-kpi,
+    body[data-page="admin"] .diag-preview-item {
+      border-radius: 10px;
+      border-color: #e1e5ec;
+      background: #fbfcfe;
+    }
+    body[data-page="admin"] .chips {
+      gap: 8px;
+    }
+    body[data-page="admin"] .chip,
+    body[data-page="admin"] .date-chip,
+    body[data-page="admin"] .chip-btn {
+      min-height: 36px;
+      padding: 6px 12px;
+      border-color: #d7dde7;
+      background: #f8fafc;
+      color: #252423;
+    }
+    body[data-page="admin"] .dropdown-inline {
+      gap: 8px;
+    }
+    body[data-page="admin"] .dropdown-inline input {
+      flex: 1 1 220px;
+    }
+    body[data-page="admin"] .preset-card,
+    body[data-page="admin"] .graph-studio-builder,
+    body[data-page="admin"] .graph-studio-preview,
+    body[data-page="admin"] #adminDashboardSection {
+      background: #ffffff;
+    }
+    body[data-page="admin"] .preset-card::before,
+    body[data-page="admin"] .preset-card::after,
+    body[data-page="admin"] .gallery-btn::before,
+    body[data-page="admin"] .gallery-btn::after {
+      content: none;
+    }
+    body[data-page="admin"] .preset-card {
+      gap: 12px;
+      padding: 16px;
+      border-radius: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    body[data-page="admin"] .preset-card .field,
+    body[data-page="admin"] .preset-advanced,
+    body[data-page="admin"] .overview-card,
+    body[data-page="admin"] .gallery-btn,
+    body[data-page="admin"] .section-note,
+    body[data-page="admin"] .preview-tip {
+      background: #ffffff;
+      border: 1px solid #e1e5ec;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .preset-card .field {
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    body[data-page="admin"] .preset-card-kicker {
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 6px;
+      background: #eef1ff;
+      border-color: #dbe1f8;
+      color: #4f52b2;
+    }
+    body[data-page="admin"] .preset-card-summary {
+      font-size: 18px;
+      color: #201f1e;
+    }
+    body[data-page="admin"] .preset-card-sub,
+    body[data-page="admin"] .preset-note {
+      color: #605e5c;
+    }
+    body[data-page="admin"] .preset-advanced {
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    body[data-page="admin"] .preset-advanced > summary {
+      padding: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #252423;
+    }
+    body[data-page="admin"] .preset-advanced > summary::before {
+      content: none;
+    }
+    body[data-page="admin"] .preset-advanced-grid {
+      padding: 0 12px 12px;
+      border-top-color: #e1e5ec;
+    }
+    body[data-page="admin"] .overview-card {
+      border-inline-start: 3px solid #4f52b2;
+    }
+    body[data-page="admin"] .overview-card.is-dirty {
+      border-inline-start-color: #d8a216;
+    }
+    body[data-page="admin"] .overview-card.is-ok {
+      border-inline-start-color: #1f8f4d;
+    }
+    body[data-page="admin"] .gallery-btn {
+      min-height: 88px;
+      padding: 14px 16px;
+    }
+    body[data-page="admin"] .gallery-btn:hover {
+      border-color: #4f52b2;
+      transform: none;
+    }
+    body[data-page="admin"] .graph-studio-builder > .toolbar,
+    body[data-page="admin"] .graph-studio-preview > .toolbar,
+    body[data-page="admin"] #adminDashboardSection > .toolbar {
+      margin-bottom: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #eceff3;
+    }
+    body[data-page="admin"] .admin-savebar {
+      order: -2;
+      position: sticky;
+      top: 86px;
+      z-index: 12;
+      border: 1px solid #dfe4ec;
+    }
+    body[data-page="admin"] .admin-savebar-main {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    body[data-page="admin"] .admin-savebar-copy {
+      display: grid;
+      gap: 6px;
+      min-width: 220px;
+      flex: 1 1 260px;
+    }
+    body[data-page="admin"] .admin-savebar-copy label {
+      margin: 0;
+    }
+    body[data-page="admin"] .admin-savebar-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    body[data-page="admin"] .admin-savebar-actions .btn.light {
+      min-height: 34px;
+      padding-inline: 10px;
+    }
+    body[data-page="admin"] .admin-savebar .save-indicator {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 12px;
+      white-space: nowrap;
+    }
+    body[data-page="admin"] .admin-table thead th {
+      background: #fbfbfc;
+      border-bottom: 1px solid #e9e9e9;
+    }
+    body[data-page="admin"] .admin-table tbody td {
+      border-bottom-color: #eceff3;
+    }
+    body[data-page="admin"] .admin-table tbody tr:nth-child(even) td {
+      background: #fcfcfd;
+    }
+    body[data-page="admin"] .admin-table tbody tr:hover td {
+      background: #f5f7fa;
+    }
+    body[data-page="admin"] dialog {
+      border-radius: 14px;
+      box-shadow: var(--shadow-modal);
+    }
+    body[data-page="admin"] .dialog-card {
+      padding: 22px;
+    }
+    body[data-page="admin"] .admin-side-tab .tab-icon {
+      display: none;
+    }
+    body[data-page="admin"] .admin-side-tab {
+      justify-content: flex-start;
+      gap: 0;
+    }
+    @media (max-width: 980px) {
+      body[data-page="admin"] .admin-savebar {
+        top: 76px;
+      }
+      body[data-page="admin"] .admin-savebar-actions {
+        justify-content: stretch;
+        width: 100%;
+      }
+    }
+    body[data-page="admin"] .btn,
+    body[data-page="admin"] .link-btn {
+      min-height: 36px;
+      padding: 0 14px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .mini-btn {
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 6px;
+      border: 1px solid #d1d7e0;
+      background: #ffffff;
+      color: #252423;
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .light,
+    body[data-page="admin"] .link-btn {
+      background: #ffffff;
+      color: #252423;
+      border-color: #d1d7e0;
+    }
+    body[data-page="admin"] .light:hover,
+    body[data-page="admin"] .link-btn:hover,
+    body[data-page="admin"] .mini-btn:hover {
+      background: #f5f7fa;
+      border-color: #c3ccd8;
+      color: #201f1e;
+    }
+    body[data-page="admin"] .toolbar > .btn.light,
+    body[data-page="admin"] .actions-group > .btn.light,
+    body[data-page="admin"] .admin-savebar-actions .btn.light,
+    body[data-page="admin"] .head .link-btn {
+      background: transparent;
+      border-color: transparent;
+    }
+    body[data-page="admin"] .toolbar > .btn.light:hover,
+    body[data-page="admin"] .actions-group > .btn.light:hover,
+    body[data-page="admin"] .admin-savebar-actions .btn.light:hover,
+    body[data-page="admin"] .head .link-btn:hover {
+      background: #eff3f8;
+      border-color: transparent;
+    }
+    body[data-page="admin"] .primary,
+    body[data-page="admin"] .btn.primary,
+    body[data-page="admin"] .accent,
+    body[data-page="admin"] .btn.accent {
+      background: #0f6cbd;
+      border-color: #0f6cbd;
+      color: #ffffff;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .primary:hover,
+    body[data-page="admin"] .btn.primary:hover,
+    body[data-page="admin"] .accent:hover,
+    body[data-page="admin"] .btn.accent:hover {
+      background: #115ea3;
+      border-color: #115ea3;
+    }
+    body[data-page="admin"] .admin-savebar-actions {
+      gap: 6px;
+    }
+    body[data-page="admin"] {
+      --admin-bg: #f4f7fb;
+      --admin-card: #ffffff;
+      --admin-soft: #f8fafc;
+      --admin-border: #e5eaf2;
+      --admin-border-strong: #d2dae6;
+      --admin-text: #0f172a;
+      --admin-muted: #64748b;
+      --admin-shadow: 0 20px 40px -28px rgba(15, 23, 42, 0.22), 0 10px 20px -16px rgba(15, 23, 42, 0.14);
+      --admin-shadow-soft: 0 14px 28px -24px rgba(15, 23, 42, 0.18), 0 4px 6px -4px rgba(15, 23, 42, 0.1);
+      font-family: "Heebo", "Rubik", "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #f8fafc 0%, #f3f6fb 36%, #f8fafc 100%);
+      color: var(--admin-text);
+    }
+    body[data-page="admin"] .qb-shell {
+      background:
+        radial-gradient(circle at top right, rgba(15, 23, 42, 0.03), transparent 30rem),
+        linear-gradient(180deg, #f8fafc 0%, #f3f6fb 36%, #f8fafc 100%);
+    }
+    body[data-page="admin"] .qb-sidebar {
+      width: 15rem;
+      background: rgba(255, 255, 255, 0.92);
+      border-left: 1px solid var(--admin-border);
+      box-shadow: none;
+      backdrop-filter: blur(18px);
+    }
+    body[data-page="admin"] .qb-main {
+      margin-right: 15rem;
+    }
+    body[data-page="admin"] .qb-brand {
+      padding: 24px 22px 14px;
+    }
+    body[data-page="admin"] .qb-brand-mark {
+      background: #111827;
+      color: #ffffff;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .qb-side-user {
+      margin: 10px 20px 18px;
+      border: 1px solid var(--admin-border);
+      border-radius: 18px;
+      background: var(--admin-soft);
+      box-shadow: none;
+    }
+    body[data-page="admin"] .qb-side-user strong,
+    body[data-page="admin"] .qb-brand-copy strong,
+    body[data-page="admin"] .qb-navbar-copy h1,
+    body[data-page="admin"] .head h1,
+    body[data-page="admin"] .card h2,
+    body[data-page="admin"] .config-diagnostics h3 {
+      color: var(--admin-text);
+    }
+    body[data-page="admin"] .qb-nav-label,
+    body[data-page="admin"] .qb-navbar-copy p,
+    body[data-page="admin"] .meta,
+    body[data-page="admin"] .diag-note,
+    body[data-page="admin"] .section-note {
+      color: var(--admin-muted);
+    }
+    body[data-page="admin"] .qb-nav-group {
+      padding-inline: 16px;
+    }
+    body[data-page="admin"] .qb-nav-link,
+    body[data-page="admin"] .admin-side-tab {
+      min-height: 46px;
+      margin-bottom: 6px;
+      border: 1px solid transparent;
+      border-radius: 14px;
+      background: transparent;
+      color: var(--admin-muted) !important;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .qb-nav-link i {
+      width: 2rem;
+      height: 2rem;
+      border-radius: 10px;
+      background: transparent;
+      color: currentColor;
+    }
+    body[data-page="admin"] .qb-nav-link:hover,
+    body[data-page="admin"] .admin-side-tab:hover {
+      background: rgba(255, 255, 255, 0.84);
+      border-color: var(--admin-border);
+      color: var(--admin-text) !important;
+    }
+    body[data-page="admin"] .qb-nav-link.active,
+    body[data-page="admin"] .admin-side-tab.active {
+      background: #ffffff;
+      border-color: var(--admin-border);
+      color: var(--admin-text) !important;
+      box-shadow: var(--admin-shadow-soft);
+      transform: none;
+    }
+    body[data-page="admin"] .qb-navbar {
+      min-height: 76px;
+      padding: 16px 28px;
+      background: rgba(248, 250, 252, 0.88);
+      border-bottom: 1px solid var(--admin-border);
+      box-shadow: none;
+      backdrop-filter: blur(18px);
+    }
+    body[data-page="admin"] .qb-burger {
+      background: #ffffff;
+      border-color: var(--admin-border);
+    }
+    body[data-page="admin"] .qb-burger:hover {
+      background: #f8fafc;
+      border-color: var(--admin-border-strong);
+    }
+    body[data-page="admin"] .qb-navbar-copy h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    body[data-page="admin"] .qb-navbar-copy p {
+      margin-top: 6px;
+      font-size: 0.92rem;
+    }
+    body[data-page="admin"] .qb-content {
+      padding: 30px 32px 36px;
+    }
+    body[data-page="admin"] .app {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 0 0 48px;
+      display: grid;
+      gap: 20px;
+    }
+    body[data-page="admin"] .card,
+    body[data-page="admin"] .dialog-card {
+      background: var(--admin-card);
+      border: 0;
+      border-radius: 24px;
+      box-shadow: var(--admin-shadow);
+    }
+    body[data-page="admin"] .head {
+      padding: 30px 32px;
+      align-items: center;
+    }
+    body[data-page="admin"] .head-icon {
+      width: 50px;
+      height: 50px;
+      border-radius: 16px;
+      background: #111827;
+      color: #ffffff;
+      box-shadow: none;
+      font-size: 20px;
+    }
+    body[data-page="admin"] .head-main {
+      gap: 18px;
+    }
+    body[data-page="admin"] .admin-eyebrow {
+      color: #94a3b8;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+    body[data-page="admin"] .head h1 {
+      margin-top: 6px;
+      font-size: clamp(2rem, 3vw, 2.7rem);
+      line-height: 1.04;
+      font-weight: 800;
+    }
+    body[data-page="admin"] .head-description,
+    body[data-page="admin"] .admin-gate-copy .meta {
+      margin-top: 10px;
+      max-width: 52rem;
+      font-size: 15px;
+      line-height: 1.8;
+    }
+    body[data-page="admin"] .admin-gate-card {
+      display: grid;
+      gap: 18px;
+      padding: 26px 28px;
+    }
+    body[data-page="admin"] .admin-gate-copy {
+      display: grid;
+      gap: 8px;
+    }
+    body[data-page="admin"] .admin-gate-copy h2 {
+      margin: 0;
+      font-size: 1.35rem;
+    }
+    body[data-page="admin"] .gate-grid {
+      gap: 14px;
+      justify-content: flex-start;
+    }
+    body[data-page="admin"] .field {
+      min-width: 240px;
+    }
+    body[data-page="admin"] label {
+      color: var(--admin-muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    body[data-page="admin"] input,
+    body[data-page="admin"] select {
+      min-height: 46px;
+      padding: 0 16px;
+      border: 1px solid var(--admin-border);
+      border-radius: 14px;
+      background: #ffffff;
+      color: var(--admin-text);
+      box-shadow: none;
+    }
+    body[data-page="admin"] select[multiple] {
+      min-height: 220px;
+      padding: 14px;
+      border-radius: 18px;
+      background: var(--admin-soft);
+    }
+    body[data-page="admin"] .btn,
+    body[data-page="admin"] .link-btn {
+      min-height: 42px;
+      padding: 0 16px;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .mini-btn {
+      min-height: 32px;
+      padding: 0 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .primary,
+    body[data-page="admin"] .btn.primary,
+    body[data-page="admin"] .accent,
+    body[data-page="admin"] .btn.accent {
+      background: #111827;
+      border-color: #111827;
+      color: #ffffff;
+    }
+    body[data-page="admin"] .primary:hover,
+    body[data-page="admin"] .btn.primary:hover,
+    body[data-page="admin"] .accent:hover,
+    body[data-page="admin"] .btn.accent:hover {
+      background: #0f172a;
+      border-color: #0f172a;
+    }
+    body[data-page="admin"] .light,
+    body[data-page="admin"] .link-btn,
+    body[data-page="admin"] .mini-btn {
+      background: #ffffff;
+      border-color: var(--admin-border-strong);
+      color: var(--admin-text);
+    }
+    body[data-page="admin"] .light:hover,
+    body[data-page="admin"] .link-btn:hover,
+    body[data-page="admin"] .mini-btn:hover {
+      background: #f8fafc;
+      border-color: #c3ccd8;
+      color: var(--admin-text);
+    }
+    body[data-page="admin"] .toolbar,
+    body[data-page="admin"] .actions-group {
+      gap: 12px;
+    }
+    body[data-page="admin"] #adminPanel {
+      gap: 20px;
+    }
+    body[data-page="admin"] [data-admin-tab] {
+      padding: 24px 26px;
+    }
+    body[data-page="admin"] .admin-overview-grid {
+      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+    body[data-page="admin"] .overview-card,
+    body[data-page="admin"] .diag-card,
+    body[data-page="admin"] .gallery-btn,
+    body[data-page="admin"] .graph-preview-shell,
+    body[data-page="admin"] .table-card,
+    body[data-page="admin"] .section-note,
+    body[data-page="admin"] .preview-tip {
+      border: 0;
+      border-radius: 20px;
+      background: var(--admin-soft);
+      box-shadow: inset 0 0 0 1px #edf2f7;
+    }
+    body[data-page="admin"] .overview-card {
+      padding: 18px 20px;
+      border-inline-start: 0;
+    }
+    body[data-page="admin"] .overview-card strong {
+      font-size: 2rem;
+      color: var(--admin-text);
+    }
+    body[data-page="admin"] .overview-card span {
+      color: var(--admin-muted);
+      font-weight: 600;
+    }
+    body[data-page="admin"] .overview-card.is-dirty {
+      background: #fffbeb;
+      box-shadow: inset 0 0 0 1px #fde68a;
+    }
+    body[data-page="admin"] .overview-card.is-ok {
+      background: #f0fdf4;
+      box-shadow: inset 0 0 0 1px #bbf7d0;
+    }
+    body[data-page="admin"] .diag-card {
+      padding: 18px 20px;
+    }
+    body[data-page="admin"] .diag-badge {
+      min-height: 30px;
+      border-radius: 10px;
+    }
+    body[data-page="admin"] .graph-studio-layout {
+      gap: 20px;
+    }
+    body[data-page="admin"] .gallery-btn {
+      min-height: 84px;
+      padding: 14px 16px;
+      background: #ffffff;
+      box-shadow: var(--admin-shadow-soft);
+    }
+    body[data-page="admin"] .gallery-btn:hover {
+      border-color: transparent;
+      transform: none;
+    }
+    body[data-page="admin"] .table-card {
+      overflow: hidden;
+      background: #ffffff;
+      box-shadow: var(--admin-shadow-soft);
+    }
+    body[data-page="admin"] .admin-savebar {
+      top: 86px;
+      padding: 20px 24px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 24px 48px -36px rgba(15, 23, 42, 0.24), 0 8px 18px -14px rgba(15, 23, 42, 0.12);
+    }
+    body[data-page="admin"] .save-indicator {
+      min-height: 40px;
+      padding: 0 12px;
+      border-radius: 12px;
+      border: 1px solid var(--admin-border);
+      background: var(--admin-soft);
+      color: var(--admin-text);
+    }
+    body[data-page="admin"] .save-indicator.is-dirty {
+      background: #fffbeb;
+      border-color: #fde68a;
+      color: #92400e;
+    }
+    body[data-page="admin"] .save-indicator.is-ok {
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+      color: #166534;
+    }
+    body[data-page="admin"] .status {
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid var(--admin-border);
+      background: #ffffff;
+      color: var(--admin-text);
+      font-weight: 600;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    }
+    body[data-page="admin"] .status.ok {
+      background: #f0fdf4;
+      color: #166534;
+      border-color: #bbf7d0;
+    }
+    body[data-page="admin"] .status.warn {
+      background: #fffbeb;
+      color: #92400e;
+      border-color: #fde68a;
+    }
+    body[data-page="admin"] .status.err {
+      background: #fef2f2;
+      color: #b91c1c;
+      border-color: #fecaca;
+    }
+    @media (max-width: 980px) {
+      body[data-page="admin"] .qb-sidebar {
+        width: min(19rem, calc(100vw - 32px));
+      }
+      body[data-page="admin"] .qb-main {
+        margin-right: 0;
+      }
+      body[data-page="admin"] .qb-navbar {
+        padding: 14px 16px;
+      }
+      body[data-page="admin"] .qb-content {
+        padding: 18px 16px 24px;
+      }
+      body[data-page="admin"] .head,
+      body[data-page="admin"] [data-admin-tab],
+      body[data-page="admin"] .admin-gate-card {
+        padding: 22px 20px;
+      }
+      body[data-page="admin"] .admin-savebar {
+        top: 76px;
+      }
+    }
+    body[data-page="admin"] .btn,
+    body[data-page="admin"] .link-btn,
+    body[data-page="admin"] .mini-btn,
+    body[data-page="admin"] .qb-navbar-link,
+    body[data-page="admin"] .qb-navbar-button,
+    body[data-page="admin"] .admin-side-tab {
+      min-height: 42px;
+      padding-inline: 16px;
+      border-radius: 12px;
+      font-size: 14px;
+    }
+    body[data-page="admin"] .gate-grid > .btn,
+    body[data-page="admin"] .toolbar > .btn,
+    body[data-page="admin"] .actions-group > .btn,
+    body[data-page="admin"] .admin-savebar-actions .btn,
+    body[data-page="admin"] .dialog-actions .btn,
+    body[data-page="admin"] .field-head .mini-btn {
+      inline-size: 160px;
+      min-width: 160px;
+      max-width: 160px;
+    }
+    body[data-page="admin"] {
+      --admin-bg: #f5f5f5;
+      --admin-card: #ffffff;
+      --admin-soft: #fafafa;
+      --admin-border: #e5e7eb;
+      --admin-border-strong: #d4d4d4;
+      --admin-text: #171717;
+      --admin-muted: #737373;
+      --admin-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.07);
+      --admin-shadow-soft: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f5f5f5;
+      color: var(--admin-text);
+    }
+    body[data-page="admin"] .qb-shell {
+      background: #f5f5f5;
+    }
+    body[data-page="admin"] .qb-brand-mark,
+    body[data-page="admin"] .head-icon {
+      background: #eff6ff;
+      border: 1px solid #dbeafe;
+      color: #2563eb;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .qb-side-user,
+    body[data-page="admin"] .overview-card,
+    body[data-page="admin"] .diag-card,
+    body[data-page="admin"] .dropdown-card,
+    body[data-page="admin"] .group-category-card,
+    body[data-page="admin"] .preset-card,
+    body[data-page="admin"] .graph-preview-shell,
+    body[data-page="admin"] .gallery-btn,
+    body[data-page="admin"] .section-note,
+    body[data-page="admin"] .preview-tip {
+      background: #fafafa;
+      border: 1px solid var(--admin-border);
+      box-shadow: none;
+    }
+    body[data-page="admin"] .qb-nav-link:hover,
+    body[data-page="admin"] .admin-side-tab:hover {
+      background: #f5f5f5;
+      border-color: transparent;
+      color: var(--admin-text) !important;
+    }
+    body[data-page="admin"] .qb-nav-link.active,
+    body[data-page="admin"] .admin-side-tab.active {
+      background: #eff6ff;
+      border-color: #dbeafe;
+      color: #1d4ed8 !important;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .qb-navbar {
+      background: #ffffff;
+      border-bottom: 1px solid var(--admin-border);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      backdrop-filter: none;
+    }
+    body[data-page="admin"] .qb-navbar-link,
+    body[data-page="admin"] .qb-navbar-button {
+      background: #ffffff;
+      border: 1px solid var(--admin-border-strong);
+      color: #262626 !important;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .qb-navbar-link:hover,
+    body[data-page="admin"] .qb-navbar-button:hover {
+      background: #fafafa;
+      border-color: #a3a3a3;
+      color: #171717 !important;
+    }
+    body[data-page="admin"] .card,
+    body[data-page="admin"] .dialog-card,
+    body[data-page="admin"] .admin-savebar,
+    body[data-page="admin"] .table-card {
+      border: 1px solid var(--admin-border);
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: var(--admin-shadow);
+    }
+    body[data-page="admin"] .head {
+      padding: 24px 26px;
+    }
+    body[data-page="admin"] .head h1 {
+      font-size: clamp(1.8rem, 3vw, 2.35rem);
+      line-height: 1.08;
+    }
+    body[data-page="admin"] .head-description,
+    body[data-page="admin"] .meta,
+    body[data-page="admin"] .diag-note,
+    body[data-page="admin"] .diag-head p,
+    body[data-page="admin"] .section-note,
+    body[data-page="admin"] .preview-tip,
+    body[data-page="admin"] .admin-savebar-note {
+      color: var(--admin-muted);
+    }
+    body[data-page="admin"] .overview-card {
+      border-inline-start: 0;
+      background: #fafafa;
+    }
+    body[data-page="admin"] .overview-card.is-dirty {
+      background: #fffbeb;
+      border-color: #fde68a;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .overview-card.is-ok {
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .diag-card[data-state="warn"] {
+      background: #fffbeb;
+      border-color: #fde68a;
+    }
+    body[data-page="admin"] .diag-card[data-state="err"] {
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+    body[data-page="admin"] .diag-kpi,
+    body[data-page="admin"] .diag-preview-item {
+      background: #ffffff;
+      border: 1px solid var(--admin-border);
+    }
+    body[data-page="admin"] .status,
+    body[data-page="admin"] .save-indicator {
+      border-radius: 12px;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .status {
+      border: 1px solid #dbeafe;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
+    body[data-page="admin"] .status.ok,
+    body[data-page="admin"] .save-indicator.is-ok {
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+      color: #15803d;
+    }
+    body[data-page="admin"] .status.warn,
+    body[data-page="admin"] .save-indicator.is-dirty {
+      border-color: #fde68a;
+      background: #fffbeb;
+      color: #b45309;
+    }
+    body[data-page="admin"] .status.err {
+      border-color: #fecaca;
+      background: #fef2f2;
+      color: #b91c1c;
+    }
+    body[data-page="admin"] .btn,
+    body[data-page="admin"] .link-btn,
+    body[data-page="admin"] .mini-btn {
+      border: 1px solid var(--admin-border-strong);
+      background: #ffffff;
+      color: #262626;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .btn:hover,
+    body[data-page="admin"] .link-btn:hover,
+    body[data-page="admin"] .mini-btn:hover {
+      background: #fafafa;
+      border-color: #a3a3a3;
+      color: #171717;
+    }
+    body[data-page="admin"] .primary,
+    body[data-page="admin"] .btn.primary,
+    body[data-page="admin"] .accent,
+    body[data-page="admin"] .btn.accent {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #ffffff;
+    }
+    body[data-page="admin"] .primary:hover,
+    body[data-page="admin"] .btn.primary:hover,
+    body[data-page="admin"] .accent:hover,
+    body[data-page="admin"] .btn.accent:hover {
+      background: #1d4ed8;
+      border-color: #1d4ed8;
+      color: #ffffff;
+    }
+    body[data-page="admin"] .toolbar > .btn.light,
+    body[data-page="admin"] .actions-group > .btn.light,
+    body[data-page="admin"] .admin-savebar-actions .btn.light,
+    body[data-page="admin"] .head .link-btn {
+      background: #ffffff;
+      border-color: var(--admin-border-strong);
+      color: #262626;
+    }
+    body[data-page="admin"] .admin-savebar {
+      top: 76px;
+      background: rgba(255, 255, 255, 0.98);
+      backdrop-filter: none;
+    }
+    body[data-page="admin"] input,
+    body[data-page="admin"] select,
+    body[data-page="admin"] textarea {
+      border: 1px solid #d4d4d4;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #171717;
+      box-shadow: none;
+    }
+    body[data-page="admin"] .dialog-card {
+      padding: 24px;
+    }
+  </style>
+  <style>
+    body[data-page="admin"] .qb-sidebar {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr);
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      width: 320px;
+      background: #ffffff;
+      border-left: 1px solid var(--ms-border);
+      box-shadow: var(--ms-shadow-lg);
+      overflow: hidden;
+    }
+
+    body[data-page="admin"] .qb-sidebar > .qb-rail {
+      grid-column: 1;
+      grid-row: 1 / span 4;
+      height: 100%;
+    }
+
+    body[data-page="admin"] .qb-sidebar > .qb-brand,
+    body[data-page="admin"] .qb-sidebar > .qb-side-user,
+    body[data-page="admin"] .qb-sidebar > .qb-nav,
+    body[data-page="admin"] .qb-sidebar > .admin-side-section {
+      grid-column: 2;
+    }
+
+    body[data-page="admin"] .qb-sidebar > .qb-brand {
+      border-bottom: 0;
+      padding-bottom: 8px;
+    }
+
+    body[data-page="admin"] .qb-sidebar > .qb-side-user {
+      margin-top: 0;
+    }
+
+    body[data-page="admin"] .admin-side-section {
+      padding-bottom: 14px;
+    }
+
+    body[data-page="admin"] .qb-main {
+      margin-right: 320px;
+    }
+
+    body[data-page="admin"].sidebar-collapsed .qb-main {
+      margin-right: 0;
+    }
+
+    body[data-page="admin"] .qb-navbar {
+      min-height: 56px;
+      padding: 10px 16px;
+      background: rgba(255, 255, 255, 0.96);
+      border-bottom: 1px solid var(--ms-border);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+      backdrop-filter: blur(12px);
+    }
+
+    body[data-page="admin"] .qb-navbar-copy h1 {
+      color: var(--ms-text);
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    body[data-page="admin"] .qb-navbar-copy p,
+    body[data-page="admin"] .meta,
+    body[data-page="admin"] .diag-note,
+    body[data-page="admin"] .diag-head p,
+    body[data-page="admin"] .section-note,
+    body[data-page="admin"] .preview-tip,
+    body[data-page="admin"] .admin-savebar-note {
+      color: var(--ms-muted);
+    }
+
+    body[data-page="admin"] .qb-content {
+      padding: 16px;
+    }
+
+    body[data-page="admin"] .app {
+      display: grid;
+      gap: 16px;
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 0 0 40px;
+    }
+
+    body[data-page="admin"] .head,
+    body[data-page="admin"] [data-admin-tab],
+    body[data-page="admin"] .admin-savebar,
+    body[data-page="admin"] .dialog-card {
+      border: 1px solid var(--ms-border);
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: var(--ms-shadow);
+    }
+
+    body[data-page="admin"] .head {
+      padding: 20px 22px;
+      align-items: center;
+    }
+
+    body[data-page="admin"] .head-icon {
+      width: 46px;
+      height: 46px;
+      border-radius: 12px;
+      background: var(--ms-purple-soft);
+      color: var(--ms-purple);
+      box-shadow: none;
+      font-size: 18px;
+    }
+
+    body[data-page="admin"] .head h1 {
+      margin-top: 4px;
+      color: var(--ms-text);
+      font-size: clamp(28px, 3vw, 34px);
+      line-height: 1.08;
+      font-weight: 700;
+    }
+
+    body[data-page="admin"] .head-description {
+      margin-top: 8px;
+      max-width: 56rem;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    body[data-page="admin"] .admin-overview-grid {
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    }
+
+    body[data-page="admin"] .overview-card,
+    body[data-page="admin"] .diag-card,
+    body[data-page="admin"] .dropdown-card,
+    body[data-page="admin"] .group-category-card,
+    body[data-page="admin"] .preset-card,
+    body[data-page="admin"] .graph-preview-shell,
+    body[data-page="admin"] .gallery-btn,
+    body[data-page="admin"] .table-card,
+    body[data-page="admin"] .section-note,
+    body[data-page="admin"] .preview-tip {
+      border: 1px solid var(--ms-border);
+      border-radius: 12px;
+      background: #fafafa;
+      box-shadow: none;
+    }
+
+    body[data-page="admin"] .overview-card strong,
+    body[data-page="admin"] .diag-kpi strong {
+      color: var(--ms-text);
+    }
+
+    body[data-page="admin"] [data-admin-tab] {
+      padding: 18px 20px;
+    }
+
+    body[data-page="admin"] .toolbar,
+    body[data-page="admin"] .actions-group,
+    body[data-page="admin"] .gate-grid {
+      gap: 10px;
+    }
+
+    body[data-page="admin"] input,
+    body[data-page="admin"] select,
+    body[data-page="admin"] textarea {
+      min-height: 38px;
+      border: 1px solid var(--ms-border);
+      border-radius: 8px;
+      background: #ffffff;
+      color: var(--ms-text);
+      box-shadow: none;
+    }
+
+    body[data-page="admin"] input:focus,
+    body[data-page="admin"] select:focus,
+    body[data-page="admin"] textarea:focus {
+      border-color: rgba(91, 45, 142, 0.24);
+      box-shadow: 0 0 0 4px rgba(91, 45, 142, 0.08);
+      outline: 0;
+    }
+
+    body[data-page="admin"] .btn,
+    body[data-page="admin"] .link-btn,
+    body[data-page="admin"] .mini-btn,
+    body[data-page="admin"] .admin-side-tab {
+      min-width: 0;
+      min-height: 32px;
+      padding: 0 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: none;
+    }
+
+    body[data-page="admin"] .primary,
+    body[data-page="admin"] .btn.primary,
+    body[data-page="admin"] .accent,
+    body[data-page="admin"] .btn.accent {
+      background: var(--ms-purple);
+      border-color: var(--ms-purple);
+      color: #ffffff;
+    }
+
+    body[data-page="admin"] .primary:hover,
+    body[data-page="admin"] .btn.primary:hover,
+    body[data-page="admin"] .accent:hover,
+    body[data-page="admin"] .btn.accent:hover {
+      background: var(--ms-purple-light);
+      border-color: var(--ms-purple-light);
+    }
+
+    body[data-page="admin"] .light,
+    body[data-page="admin"] .link-btn,
+    body[data-page="admin"] .mini-btn {
+      background: #ffffff;
+      border-color: var(--ms-border);
+      color: var(--ms-text);
+    }
+
+    body[data-page="admin"] .light:hover,
+    body[data-page="admin"] .link-btn:hover,
+    body[data-page="admin"] .mini-btn:hover {
+      background: var(--ms-indigo-soft);
+      border-color: var(--ms-border);
+      color: var(--ms-text);
+    }
+
+    body[data-page="admin"] .status,
+    body[data-page="admin"] .save-indicator {
+      border-radius: 8px;
+      box-shadow: none;
+    }
+
+    body[data-page="admin"] .admin-savebar {
+      top: 72px;
+      padding: 16px 18px;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(12px);
+    }
+
+    body[data-page="admin"] dialog::backdrop {
+      background: rgba(32, 31, 30, 0.28);
+      backdrop-filter: blur(4px);
+    }
+
+    @media (max-width: 980px) {
+      body[data-page="admin"] .qb-main {
+        margin-right: 0;
+      }
+
+      body[data-page="admin"] .qb-sidebar {
+        width: min(320px, calc(100vw - 24px));
+      }
+    }
+  </style>
+  <link rel="stylesheet" href="attendance.theme.css?v=20260326-45">
+  <link rel="stylesheet" href="attendance.chatdock.css?v=20260326-02">
+</head>
+<body data-page="admin">
+  <div class="qb-shell">
+    <aside id="shellSidebar" class="qb-sidebar">
+      <div class="qb-rail">
+        <a class="qb-rail-anchor" href="index.html" aria-label="בחירה"><i class="fas fa-border-all" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="attendance.html" aria-label="נוכחות"><i class="fas fa-calendar-check" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="chat.html" aria-label="צ'אט"><i class="fas fa-comments" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor active" href="admin.html" aria-label="ניהול"><i class="fas fa-cog" aria-hidden="true"></i></a>
+        <div class="qb-rail-spacer"></div>
+        <div class="qb-rail-avatar" aria-hidden="true">AD</div>
+      </div>
+      <div class="qb-brand">
+        <div class="qb-brand-mark"><i class="fas fa-layer-group" aria-hidden="true"></i></div>
+        <div class="qb-brand-copy">
+          <strong>מערכת נוכחות</strong>
+          <span>ניהול מקורות, תאריכים והרשאות</span>
+        </div>
+      </div>
+      <div class="qb-side-user">
+        <div class="qb-side-avatar">AD</div>
+        <div>
+          <strong>ניהול</strong>
+          <span>מרכז בקרה</span>
+        </div>
+      </div>
+      <nav class="qb-nav" aria-label="Primary">
+        <div class="qb-nav-group">
+          <span class="qb-nav-label">ניווט</span>
+          <a class="qb-nav-link" href="index.html"><i class="fas fa-border-all" aria-hidden="true"></i><span>בחירה</span></a>
+          <a class="qb-nav-link" href="attendance.html"><i class="fas fa-clipboard-list" aria-hidden="true"></i><span>נוכחות</span></a>
+          <a class="qb-nav-link" href="chat.html"><i class="fas fa-comments" aria-hidden="true"></i><span>צ'אט</span></a>
+          <a class="qb-nav-link active" href="admin.html"><i class="fas fa-cog" aria-hidden="true"></i><span>ניהול</span></a>
+        </div>
+        <div id="adminSectionNav" class="qb-nav-group hidden">
+          <span class="qb-nav-label">אזורי ניהול</span>
+          <div id="adminSidebarTabs" class="admin-side-tabs" role="tablist" aria-label="ניווט אזורי ניהול"></div>
+        </div>
+      </nav>
+      <section class="qb-side-section admin-side-section" data-shell-notification-center="1">
+        <span class="qb-side-section-title">מוקדי בקרה</span>
+        <div class="qb-side-stack" data-notification-list></div>
+      </section>
+    </aside>
+    <div class="qb-main">
+      <header class="qb-navbar">
+        <div class="qb-navbar-left">
+          <button type="button" class="qb-burger" data-sidebar-toggle="1" aria-controls="shellSidebar" aria-expanded="true" aria-label="הסתר תפריט">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div class="qb-navbar-copy">
+            <h1>ניהול</h1>
+          </div>
+        </div>
+        <div class="qb-navbar-right">
+          <a class="qb-navbar-link" href="index.html"><span>בחירה</span></a>
+          <a class="qb-navbar-link" href="attendance.html"><span>נוכחות</span></a>
+          <a class="qb-navbar-link" href="chat.html"><span>צ'אט</span></a>
+        </div>
+      </header>
+      <div class="qb-content">
+  <div class="app admin-app admin-workbench">
+    <section class="card head admin-hero-card">
+        <div class="admin-hero-main">
+          <div class="head-main">
+            <div class="head-icon" aria-hidden="true"><i class="fas fa-sliders-h"></i></div>
+            <div>
+              <span class="admin-eyebrow">מערכת ניהול</span>
+              <h1>מרכז ניהול</h1>
+            </div>
+          </div>
+          <div class="admin-hero-status">
+            <div id="status" class="status">טוען הגדרות...</div>
+          </div>
+          <div id="adminHeroMetrics" class="admin-hero-metrics"></div>
+        </div>
+        <div class="admin-hero-side">
+          <div class="admin-hero-badges" aria-hidden="true">
+            <span class="admin-hero-badge"><i class="fas fa-database"></i><span>רשימות</span></span>
+            <span class="admin-hero-badge"><i class="fas fa-share-alt"></i><span>SharePoint</span></span>
+            <span class="admin-hero-badge"><i class="fas fa-comments"></i><span>חדרי צ'אט</span></span>
+          </div>
+          <div class="admin-hero-shortcuts">
+            <a class="btn light admin-hero-link" href="index.html"><i class="fas fa-border-all" aria-hidden="true"></i><span>בחירת נוכחות</span></a>
+            <a class="btn light admin-hero-link" href="attendance.html"><i class="fas fa-calendar-check" aria-hidden="true"></i><span>נוכחות</span></a>
+            <a class="btn light admin-hero-link" href="chat.html"><i class="fas fa-comments" aria-hidden="true"></i><span>צ'אט</span></a>
+          </div>
+        </div>
+    </section>
+
+    <section id="gateCard" class="card admin-gate-card admin-section admin-section-gate">
+      <div class="admin-gate-copy">
+        <span class="admin-eyebrow">גישה</span>
+        <h2>פתיחת ניהול</h2>
+      </div>
+      <div class="gate-grid">
+        <div class="field">
+          <label for="gatePassword">קוד מנהל</label>
+          <input id="gatePassword" type="password">
+        </div>
+        <button id="unlockBtn" type="button" class="btn primary">פתח ניהול</button>
+      </div>
+      <p id="gateHint" class="meta"></p>
+    </section>
+
+    <section id="adminPanel" class="hidden admin-panel-stack admin-panel-grid">
+      <section id="adminOverviewSection" class="card admin-section admin-section-overview" data-admin-tab="overview">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">סקירה</span>
+            <h2>מצב המערכת</h2>
+          </div>
+        </div>
+        <div id="adminOverview" class="admin-overview-grid"></div>
+      </section>
+
+      <section id="adminConfigSection" class="card admin-section admin-section-config" data-admin-tab="config">
+        <!-- Configuration for data sources is now managed in attendance.config.js -->
+      </section>
+
+      <section id="adminDaysSection" class="card admin-section admin-section-days" data-admin-tab="days">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">זמינות</span>
+            <h2>תאריכים פתוחים</h2>
+          </div>
+        </div>
+        <div class="gate-grid">
+          <div class="field">
+            <label for="openDateInput">תאריך להוספה</label>
+            <input id="openDateInput" type="date">
+          </div>
+          <button id="addDateBtn" type="button" class="btn light">הוסף תאריך</button>
+          <div class="field">
+            <label for="openDateRangeStart">טווח תאריכים - התחלה</label>
+            <input id="openDateRangeStart" type="date">
+          </div>
+          <div class="field">
+            <label for="openDateRangeEnd">טווח תאריכים - סיום</label>
+            <input id="openDateRangeEnd" type="date">
+          </div>
+          <button id="addDateRangeBtn" type="button" class="btn light">הוסף טווח תאריכים</button>
+        </div>
+        <div id="openDates" class="chips"></div>
+      </section>
+
+      <section id="adminCatalogSection" class="card admin-section admin-section-catalog" data-admin-tab="preferences">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">שדות</span>
+            <h2>עמודות זמינות</h2>
+          </div>
+        </div>
+        <div id="catalog" class="chips"></div>
+      </section>
+
+      <section id="adminColumnsSection" class="card admin-section admin-section-columns" data-admin-tab="preferences">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">תצוגה</span>
+            <h2>העדפות תצוגה ועריכה</h2>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <div class="field-head">
+              <label for="groupColumns">עמודות קבוצה ראשית</label>
+              <button type="button" class="mini-btn clear-select" data-clear-select="groupColumns">נקה בחירה</button>
+            </div>
+            <select id="groupColumns" multiple></select>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label for="filterColumns">עמודות למסנני משתמש</label>
+              <button type="button" class="mini-btn clear-select" data-clear-select="filterColumns">נקה בחירה</button>
+            </div>
+            <select id="filterColumns" multiple></select>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label for="editableColumns">עמודות עריכה במסך נוכחות</label>
+              <button type="button" class="mini-btn clear-select" data-clear-select="editableColumns">נקה בחירה</button>
+            </div>
+            <select id="editableColumns" multiple></select>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label for="addRowColumns">עמודות בטופס הוספת שורה</label>
+              <button type="button" class="mini-btn clear-select" data-clear-select="addRowColumns">נקה בחירה</button>
+            </div>
+            <select id="addRowColumns" multiple></select>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label for="phonebookColumns">עמודות לספר טלפונים</label>
+              <button type="button" class="mini-btn clear-select" data-clear-select="phonebookColumns">נקה בחירה</button>
+            </div>
+            <select id="phonebookColumns" multiple></select>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label for="frozenColumns">עמודות קפואות במסך נוכחות</label>
+              <button type="button" class="mini-btn clear-select" data-clear-select="frozenColumns">נקה בחירה</button>
+            </div>
+            <select id="frozenColumns" multiple></select>
+          </div>
+        </div>
+      </section>
+
+      <section id="adminDropdownSection" class="card admin-section admin-section-dropdowns" data-admin-tab="preferences">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">טפסים</span>
+            <h2>הגדרות dropdown</h2>
+          </div>
+          <button id="addDropdownConfigBtn" type="button" class="btn light">הוסף dropdown</button>
+        </div>
+        <div id="dropdownConfigs" class="dropdown-list"></div>
+      </section>
+
+      <section id="adminCategoriesSection" class="card admin-section admin-section-categories" data-admin-tab="preferences">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">בחירה</span>
+            <h2>קטגוריות בחירה למסך הפתיחה</h2>
+          </div>
+          <button id="addGroupCategoryBtn" type="button" class="btn light">הוסף קטגוריה</button>
+        </div>
+        <div id="groupCategoryStatus" class="section-note"></div>
+        <div id="groupCategories" class="group-category-list"></div>
+      </section>
+
+      <section id="adminUnitsSection" class="card admin-section admin-section-units" data-admin-tab="units">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">יחידות</span>
+            <h2>נכס לאומי</h2>
+          </div>
+          <div class="actions-group">
+            <button id="refreshSourceRecordsBtn" type="button" class="btn light">רענן</button>
+            <button id="importSourceExcelBtn" type="button" class="btn primary">ייבוא קובץ למאגר</button>
+            <input id="importSourceExcelInput" type="file" accept=".xlsx,.xls,.csv,.txt,.tsv" class="visually-hidden">
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field span-all">
+            <label for="unitsSearch">חיפוש חופשי</label>
+            <input id="unitsSearch" type="search" placeholder="חיפוש לפי שם, יחידה, טלפון, סטטוס או כל עמודה אחרת">
+          </div>
+        </div>
+        <div id="unitsStatusMeta" class="section-note"></div>
+        <div class="units-shell">
+          <div id="unitsStatusBoard" class="table-card"></div>
+        </div>
+      </section>
+
+      <section id="adminOperationsSection" class="card admin-section admin-section-operations" data-admin-tab="operations">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">מבצעים</span>
+            <h2>יומן מבצעים</h2>
+          </div>
+          <div class="actions-group">
+            <div id="operationsViewToggle" class="admin-view-toggle" role="tablist" aria-label="תצוגת יומן מבצעים">
+              <button type="button" class="admin-view-btn active" data-module-view="operations" data-view="table" aria-pressed="true"><i class="fas fa-table"></i><span>טבלה</span></button>
+              <button type="button" class="admin-view-btn" data-module-view="operations" data-view="cards" aria-pressed="false"><i class="fas fa-id-card"></i><span>כרטיסים</span></button>
+            </div>
+            <button id="refreshOperationsBtn" type="button" class="btn light">רענן</button>
+            <button id="addOperationsEntryBtn" type="button" class="btn primary">הוסף אירוע</button>
+          </div>
+        </div>
+        <div id="operationsLogMeta" class="section-note"></div>
+        <div id="operationsLogBoard" class="table-card module-board"></div>
+      </section>
+
+      <section id="adminCasualtiesSection" class="card admin-section admin-section-casualties" data-admin-tab="casualties">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">נפגעים ורכוש</span>
+            <h2>נפגעי רכוש ונפגעים</h2>
+          </div>
+          <div class="actions-group">
+            <div id="casualtiesViewToggle" class="admin-view-toggle" role="tablist" aria-label="תצוגת נפגעים ורכוש">
+              <button type="button" class="admin-view-btn active" data-module-view="casualties" data-view="table" aria-pressed="true"><i class="fas fa-table"></i><span>טבלה</span></button>
+              <button type="button" class="admin-view-btn" data-module-view="casualties" data-view="cards" aria-pressed="false"><i class="fas fa-id-card"></i><span>כרטיסים</span></button>
+            </div>
+            <button id="refreshCasualtiesBtn" type="button" class="btn light">רענן</button>
+            <button id="addCasualtyEntryBtn" type="button" class="btn primary">הוסף רשומה</button>
+          </div>
+        </div>
+        <div id="casualtiesMeta" class="section-note"></div>
+        <div id="casualtiesBoard" class="table-card module-board"></div>
+      </section>
+
+      <div id="adminGraphsSection" class="graph-studio-layout" data-admin-tab="graphs">
+        <section class="card graph-studio-builder admin-section">
+          <div class="toolbar">
+            <div>
+              <span class="admin-section-kicker">דשבורד</span>
+              <h2>הגדרות דשבורד</h2>
+            </div>
+            <button id="addPresetBtn" type="button" class="btn light">הוסף גרף מותאם</button>
+          </div>
+          <div class="widget-gallery">
+            <button type="button" class="gallery-btn" data-graph-type="bar"><strong>Bar</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="stacked"><strong>Stacked</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="line"><strong>Line</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="area"><strong>Area</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="pie"><strong>Pie</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="donut"><strong>Donut</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="radar"><strong>Radar</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="radial"><strong>Radial</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="progress"><strong>Progress</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="polar"><strong>Polar</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="heatmap"><strong>Heatmap</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="table"><strong>Cross Table</strong></button>
+            <button type="button" class="gallery-btn" data-graph-type="metric"><strong>Metric</strong></button>
+          </div>
+          <div id="crossTabs" class="preset-list"></div>
+        </section>
+
+        <section id="dashboardPreviewSection" class="card graph-studio-preview admin-section">
+          <div class="toolbar">
+            <div>
+              <span class="admin-section-kicker">תצוגה מקדימה</span>
+              <h2>תצוגה חיה של הדשבורד</h2>
+            </div>
+            <button id="graphPreviewRefreshBtn" type="button" class="btn light">רענן תצוגה</button>
+          </div>
+          <div id="dashboardPreviewSummary" class="graph-preview-shell"></div>
+          <div id="dashboardPreviewGrid" class="graph-preview-shell"></div>
+        </section>
+      </div>
+
+      <section id="adminDashboardSection" class="card admin-section admin-section-dashboard" data-admin-tab="overview">
+        <div class="toolbar">
+          <div>
+            <span class="admin-section-kicker">תמונת מצב</span>
+            <h2>דשבורד מנהל</h2>
+          </div>
+          <button id="adminDashboardRefreshBtn" type="button" class="btn light">רענן דשבורד</button>
+        </div>
+        <div id="adminDashboardSummary" class="graph-preview-shell"></div>
+        <div id="adminDashboardGrid" class="graph-preview-shell"></div>
+      </section>
+
+      <section class="card admin-savebar" data-admin-tab="all">
+        <div class="admin-savebar-main">
+          <div class="admin-savebar-copy">
+            <span class="admin-savebar-kicker">בקרת שמירה</span>
+            <label>מצב שמירה</label>
+            <div id="saveBarNote" class="admin-savebar-note"></div>
+          </div>
+          <div class="admin-savebar-status">
+            <div id="saveIndicator" class="save-indicator">טוען מצב שמירה...</div>
+          </div>
+          <div class="admin-savebar-actions">
+            <button id="saveBtn" type="button" class="btn primary" hidden><i class="fas fa-save" aria-hidden="true"></i><span>שמור שינויים</span></button>
+            <button id="changePasswordBtn" type="button" class="btn light"><i class="fas fa-key" aria-hidden="true"></i><span>שינוי קוד</span></button>
+          </div>
+        </div>
+      </section>
+    </section>
+  </div>
+
+      </div>
+    </div>
+  </div>
+
+  <dialog id="adminRecordDialog">
+    <div class="dialog-card admin-record-dialog-card">
+      <div class="dialog-head">
+        <div>
+          <h2 id="adminRecordDialogTitle">רשומה חדשה</h2>
+        </div>
+        <button id="closeAdminRecordDialogBtn" type="button" class="btn light">סגור</button>
+      </div>
+      <div id="adminRecordDialogMeta" class="section-note hidden"></div>
+      <section id="adminRecordLookupSection" class="admin-record-lookup hidden">
+        <div class="toolbar">
+          <div>
+            <h3 id="adminRecordLookupTitle">איתור נתונים מהמאגר</h3>
+          </div>
+        </div>
+        <div class="dialog-grid admin-record-lookup-grid">
+          <div class="field">
+            <label id="adminRecordLookupInputLabel" for="adminRecordLookupInput">מספר אישי</label>
+            <input id="adminRecordLookupInput" type="text" inputmode="numeric" autocomplete="off" placeholder="הזינו מספר אישי">
+          </div>
+          <div class="dialog-actions dialog-actions-inline">
+            <button id="adminRecordLookupBtn" type="button" class="btn light">אתר במאגר</button>
+          </div>
+        </div>
+        <div id="adminRecordLookupStatus" class="section-note"></div>
+        <div id="adminRecordLookupActions" class="dialog-actions hidden">
+          <button id="applyAdminRecordLookupBtn" type="button" class="btn primary">מלא שדות רלוונטיים</button>
+        </div>
+      </section>
+      <div id="adminRecordFields" class="dialog-grid admin-record-fields"></div>
+      <div class="dialog-actions">
+        <button id="submitAdminRecordBtn" type="button" class="btn primary">שמור רשומה</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="changePasswordDialog">
+    <div class="dialog-card">
+      <div class="dialog-head">
+        <div>
+          <h2>שינוי קוד מנהל</h2>
+        </div>
+        <button id="closeChangePasswordDialogBtn" type="button" class="btn light">סגור</button>
+      </div>
+      <div class="dialog-grid">
+        <div id="currentPasswordField" class="field">
+          <label for="currentPasswordInput">קוד מנהל נוכחי</label>
+          <input id="currentPasswordInput" type="password" autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label for="nextPasswordInput">קוד מנהל חדש</label>
+          <input id="nextPasswordInput" type="password" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label for="confirmPasswordInput">אימות קוד חדש</label>
+          <input id="confirmPasswordInput" type="password" autocomplete="new-password">
+        </div>
+        <div id="changePasswordDialogStatus" class="status"></div>
+      </div>
+      <div class="dialog-actions">
+        <button id="submitChangePasswordBtn" type="button" class="btn primary">שמור קוד</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script charset="utf-8" src="fontawesome/all.min.js"></script>
+  <script charset="utf-8" src="js/xlsx.full.min.js?v=20260311-9"></script>
+  <script charset="utf-8" src="attendance.config.js?v=20260329-1"></script>
+  <script charset="utf-8" src="js/chart.umd.min.js?v=20260315-01"></script>
+  <script charset="utf-8" src="js/attendance.app.js?v=20260329-1"></script>
+  <script charset="utf-8" src="js/attendance.dashboard.js?v=20260326-08"></script>
+  <script charset="utf-8" src="js/attendance.chatdock.js?v=20260326-04"></script>
+</body>
+</html>
+

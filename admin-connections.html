@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="fontawesome/all.min.css">
+  <title>Attendance Config</title>
+  <style>
+    .app {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 22px 56px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: none;
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+    .head,
+    .actions,
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .head {
+      align-items: flex-start;
+    }
+    .head-main {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .head-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-subtle);
+      color: var(--primary-dark);
+      border: 1px solid var(--border);
+      font-size: 22px;
+      box-shadow: none;
+    }
+    .actions-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    h1, h2 { margin: 0; }
+    .meta {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .link-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 50px;
+      padding: 0 18px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 800;
+      color: var(--primary-dark);
+      background: #fff;
+      border: 1px solid var(--border);
+    }
+    .status {
+      margin-top: 12px;
+      padding: 14px 16px;
+      border-radius: 10px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      border: 1px solid rgba(102,51,153,0.16);
+      font-weight: 700;
+      line-height: 1.5;
+    }
+    .status.ok { background: #daf4e5; color: #0b7a4b; border-color: #b7e2c7; }
+    .status.warn { background: #fff1cf; color: #8f640a; border-color: #edd48d; }
+    .status.err { background: #fde5db; color: #ab3310; border-color: #efc1af; }
+    .table-card {
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: none;
+    }
+    .admin-table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      margin-top: 14px;
+    }
+    .admin-table th,
+    .admin-table td {
+      padding: 14px 12px;
+      border-bottom: 1px solid var(--surface-line-soft);
+      text-align: right;
+      vertical-align: top;
+    }
+    .admin-table th {
+      width: 240px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      background: var(--surface-subtle);
+    }
+    .admin-table tbody tr:nth-child(even) td {
+      background: inherit;
+    }
+    .admin-table tbody tr:hover td {
+      background: var(--surface-subtle);
+    }
+    .admin-table tbody tr:last-child th,
+    .admin-table tbody tr:last-child td {
+      border-bottom: 0;
+    }
+    code {
+      padding: 3px 8px;
+      border-radius: 8px;
+      background: var(--surface-muted);
+      color: var(--primary-dark);
+    }
+    @media (max-width: 760px) {
+      .app {
+        padding: 20px 14px 40px;
+      }
+      .head {
+        padding: 20px;
+      }
+      .head-main {
+        align-items: flex-start;
+      }
+    }
+    body[data-page="admin-connections"] .app {
+      padding: 20px 18px 48px;
+    }
+    body[data-page="admin-connections"] .card {
+      padding: 18px;
+      border-radius: 12px;
+      border-color: #e1e5ec;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    body[data-page="admin-connections"] .head,
+    body[data-page="admin-connections"] .toolbar,
+    body[data-page="admin-connections"] .actions {
+      gap: 10px;
+    }
+    body[data-page="admin-connections"] .head .actions {
+      display: none;
+    }
+    body[data-page="admin-connections"] .head {
+      align-items: center;
+    }
+    body[data-page="admin-connections"] .head-main {
+      gap: 12px;
+    }
+    body[data-page="admin-connections"] .head-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: #eef1ff;
+      border-color: #dbe1f8;
+      color: #4f52b2;
+      box-shadow: none;
+      font-size: 18px;
+    }
+    body[data-page="admin-connections"] .link-btn {
+      min-height: 40px;
+      padding: 0 14px;
+      border-radius: 8px;
+      border-color: transparent;
+      background: transparent;
+      color: #252423;
+      font-weight: 600;
+    }
+    body[data-page="admin-connections"] .link-btn:hover {
+      background: #eff3f8;
+      border-color: transparent;
+    }
+    body[data-page="admin-connections"] .status {
+      border-radius: 8px;
+      border-color: #c9def4;
+      background: #edf5ff;
+      color: #0f548c;
+      font-weight: 600;
+    }
+    body[data-page="admin-connections"] .table-card {
+      border-radius: 10px;
+      border-color: #e1e5ec;
+      box-shadow: none;
+    }
+    body[data-page="admin-connections"] .admin-table {
+      margin-top: 0;
+    }
+    body[data-page="admin-connections"] .admin-table th {
+      background: #fbfbfc;
+      color: #605e5c;
+      font-weight: 700;
+    }
+    body[data-page="admin-connections"] .admin-table tbody tr:hover td {
+      background: #f5f7fa;
+    }
+    body[data-page="admin-connections"] .btn,
+    body[data-page="admin-connections"] .link-btn {
+      min-height: 36px;
+      padding: 0 14px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: none;
+    }
+    body[data-page="admin-connections"] .link-btn {
+      background: transparent;
+      border-color: transparent;
+      color: #252423;
+    }
+    body[data-page="admin-connections"] .link-btn:hover {
+      background: #eff3f8;
+      border-color: transparent;
+      color: #201f1e;
+    }
+    body[data-page="admin-connections"] .btn,
+    body[data-page="admin-connections"] .link-btn,
+    body[data-page="admin-connections"] .qb-navbar-link,
+    body[data-page="admin-connections"] .qb-navbar-button {
+      min-height: 42px;
+      padding-inline: 16px;
+      border-radius: 12px;
+      font-size: 14px;
+    }
+    body[data-page="admin-connections"] .btn,
+    body[data-page="admin-connections"] .link-btn {
+      inline-size: 160px;
+      min-width: 160px;
+      max-width: 160px;
+    }
+    body[data-page="admin-connections"] {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f5f5f5;
+      color: #171717;
+    }
+    body[data-page="admin-connections"] .qb-shell {
+      background: #f5f5f5;
+    }
+    body[data-page="admin-connections"] .qb-brand-mark,
+    body[data-page="admin-connections"] .head-icon {
+      background: #eff6ff;
+      border: 1px solid #dbeafe;
+      color: #2563eb;
+      box-shadow: none;
+    }
+    body[data-page="admin-connections"] .qb-side-user {
+      background: #fafafa;
+      border: 1px solid #e5e7eb;
+      box-shadow: none;
+    }
+    body[data-page="admin-connections"] .qb-nav-link:hover {
+      background: #f5f5f5;
+      border-color: transparent;
+      color: #171717 !important;
+    }
+    body[data-page="admin-connections"] .qb-nav-link.active {
+      background: #eff6ff;
+      border-color: #dbeafe;
+      color: #1d4ed8 !important;
+      box-shadow: none;
+    }
+    body[data-page="admin-connections"] .qb-navbar {
+      background: #ffffff;
+      border-bottom: 1px solid #e5e7eb;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      backdrop-filter: none;
+    }
+    body[data-page="admin-connections"] .qb-navbar-link,
+    body[data-page="admin-connections"] .qb-navbar-button {
+      background: #ffffff;
+      border: 1px solid #d4d4d4;
+      color: #262626 !important;
+      box-shadow: none;
+    }
+    body[data-page="admin-connections"] .qb-navbar-link:hover,
+    body[data-page="admin-connections"] .qb-navbar-button:hover {
+      background: #fafafa;
+      border-color: #a3a3a3;
+      color: #171717 !important;
+    }
+    body[data-page="admin-connections"] .card,
+    body[data-page="admin-connections"] .table-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.07);
+    }
+    body[data-page="admin-connections"] .head {
+      padding: 24px 26px;
+    }
+    body[data-page="admin-connections"] .head h1,
+    body[data-page="admin-connections"] .meta {
+      color: #171717;
+    }
+    body[data-page="admin-connections"] .meta {
+      color: #737373;
+    }
+    body[data-page="admin-connections"] .status {
+      border-radius: 12px;
+      border: 1px solid #dbeafe;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
+    body[data-page="admin-connections"] .status.ok {
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+      color: #15803d;
+    }
+    body[data-page="admin-connections"] .status.warn {
+      border-color: #fde68a;
+      background: #fffbeb;
+      color: #b45309;
+    }
+    body[data-page="admin-connections"] .status.err {
+      border-color: #fecaca;
+      background: #fef2f2;
+      color: #b91c1c;
+    }
+    body[data-page="admin-connections"] .link-btn {
+      background: #ffffff;
+      border-color: #d4d4d4;
+      color: #262626;
+    }
+    body[data-page="admin-connections"] .link-btn:hover {
+      background: #fafafa;
+      border-color: #a3a3a3;
+      color: #171717;
+    }
+    body[data-page="admin-connections"] .table-card {
+      padding: 0;
+      overflow: hidden;
+    }
+    body[data-page="admin-connections"] .admin-table {
+      margin-top: 0;
+    }
+    body[data-page="admin-connections"] .admin-table th {
+      background: #fafafa;
+      color: #525252;
+      font-weight: 700;
+    }
+    body[data-page="admin-connections"] .admin-table td {
+      color: #171717;
+    }
+    body[data-page="admin-connections"] .admin-table th,
+    body[data-page="admin-connections"] .admin-table td {
+      border-bottom: 1px solid #f0f0f0;
+    }
+    body[data-page="admin-connections"] .admin-table tbody tr:hover td {
+      background: #fafafa;
+    }
+    body[data-page="admin-connections"] .wizard-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    body[data-page="admin-connections"] .wizard-summary-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      background: #fafafa;
+      padding: 16px;
+      display: grid;
+      gap: 6px;
+    }
+    body[data-page="admin-connections"] .wizard-summary-card strong {
+      font-size: 24px;
+      line-height: 1;
+    }
+    body[data-page="admin-connections"] .wizard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+    body[data-page="admin-connections"] .wizard-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      background: #fff;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    body[data-page="admin-connections"] .wizard-card[data-state="ok"] {
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+    }
+    body[data-page="admin-connections"] .wizard-card[data-state="warn"] {
+      border-color: #fde68a;
+      background: #fffbeb;
+    }
+    body[data-page="admin-connections"] .wizard-card[data-state="err"] {
+      border-color: #fecaca;
+      background: #fef2f2;
+    }
+    body[data-page="admin-connections"] .wizard-card-head,
+    body[data-page="admin-connections"] .wizard-card-actions,
+    body[data-page="admin-connections"] .wizard-card-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    body[data-page="admin-connections"] .wizard-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #e5e7eb;
+      color: #374151;
+    }
+    body[data-page="admin-connections"] .wizard-card[data-state="ok"] .wizard-badge {
+      background: #dcfce7;
+      color: #166534;
+    }
+    body[data-page="admin-connections"] .wizard-card[data-state="warn"] .wizard-badge {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    body[data-page="admin-connections"] .wizard-card[data-state="err"] .wizard-badge {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    body[data-page="admin-connections"] .wizard-copy {
+      display: grid;
+      gap: 4px;
+    }
+    body[data-page="admin-connections"] .wizard-copy p,
+    body[data-page="admin-connections"] .wizard-list p,
+    body[data-page="admin-connections"] .wizard-empty {
+      margin: 0;
+      color: #525252;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    body[data-page="admin-connections"] .wizard-meta {
+      color: #737373;
+      font-size: 12px;
+      word-break: break-word;
+    }
+    body[data-page="admin-connections"] .wizard-list {
+      display: grid;
+      gap: 6px;
+    }
+    body[data-page="admin-connections"] .wizard-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    body[data-page="admin-connections"] .wizard-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    body[data-page="admin-connections"] .wizard-chip.warn {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    body[data-page="admin-connections"] .wizard-chip.err {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    body[data-page="admin-connections"] .wizard-card-actions .btn {
+      min-width: 132px;
+      max-width: none;
+      inline-size: auto;
+      flex: 1 1 132px;
+    }
+    body[data-page="admin-connections"] .connections-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    body[data-page="admin-connections"] .connections-tab {
+      min-height: 40px;
+      padding: 0 16px;
+      border-radius: 999px;
+      border: 1px solid #d4d4d4;
+      background: #fff;
+      color: #262626;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    body[data-page="admin-connections"] .connections-tab.active {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1d4ed8;
+    }
+    body[data-page="admin-connections"] .connections-panel.hidden {
+      display: none;
+    }
+    body[data-page="admin-connections"] .schema-editor-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+      gap: 14px;
+      margin-top: 16px;
+      align-items: start;
+    }
+    body[data-page="admin-connections"] .schema-side-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      background: #fafafa;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    body[data-page="admin-connections"] .schema-side-card .field {
+      display: grid;
+      gap: 6px;
+    }
+    body[data-page="admin-connections"] .schema-side-card label {
+      font-size: 13px;
+      font-weight: 700;
+      color: #3f3f46;
+    }
+    body[data-page="admin-connections"] .schema-side-card input:not([type="checkbox"]),
+    body[data-page="admin-connections"] .schema-side-card select,
+    body[data-page="admin-connections"] .schema-side-card textarea {
+      min-height: 40px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #d4d4d8;
+      background: #fff;
+      color: #18181b;
+      font: inherit;
+    }
+    body[data-page="admin-connections"] .schema-side-card textarea {
+      min-height: 90px;
+      resize: vertical;
+    }
+    body[data-page="admin-connections"] .schema-side-card input[type="checkbox"] {
+      inline-size: 16px;
+      block-size: 16px;
+      margin-inline-start: 0;
+      margin-inline-end: 8px;
+      vertical-align: middle;
+    }
+    body[data-page="admin-connections"] .schema-preview {
+      border: 1px dashed #cbd5e1;
+      border-radius: 10px;
+      background: #fff;
+      padding: 12px;
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    body[data-page="admin-connections"] .schema-table {
+      width: 100%;
+      min-width: 900px;
+      border-collapse: collapse;
+    }
+    body[data-page="admin-connections"] .schema-table th,
+    body[data-page="admin-connections"] .schema-table td {
+      padding: 12px;
+      border-bottom: 1px solid #f0f0f0;
+      text-align: right;
+      vertical-align: top;
+    }
+    body[data-page="admin-connections"] .schema-table th {
+      background: #fafafa;
+      color: #525252;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    body[data-page="admin-connections"] .schema-table td input {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #d4d4d8;
+      background: #fff;
+      color: #18181b;
+      font: inherit;
+    }
+    body[data-page="admin-connections"] .schema-tags,
+    body[data-page="admin-connections"] .schema-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    body[data-page="admin-connections"] .schema-tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #eef2ff;
+      color: #4338ca;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    body[data-page="admin-connections"] .schema-tag.warn {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    body[data-page="admin-connections"] .schema-empty {
+      padding: 22px;
+      color: #525252;
+      line-height: 1.7;
+    }
+    @media (max-width: 1080px) {
+      body[data-page="admin-connections"] .schema-editor-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+  <link rel="stylesheet" href="attendance.theme.css?v=20260326-45">
+</head>
+<body data-page="admin-connections">
+  <div class="qb-shell">
+    <aside id="shellSidebar" class="qb-sidebar">
+      <div class="qb-rail">
+        <a class="qb-rail-anchor" href="index.html" aria-label="בחירה"><i class="fas fa-border-all" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="attendance.html" aria-label="נוכחות"><i class="fas fa-calendar-check" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="chat.html" aria-label="צ'אט"><i class="fas fa-comments" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor active" href="admin.html" aria-label="ניהול"><i class="fas fa-cog" aria-hidden="true"></i></a>
+        <div class="qb-rail-spacer"></div>
+        <div class="qb-rail-avatar" aria-hidden="true">AD</div>
+      </div>
+      <div class="qb-brand">
+        <div class="qb-brand-mark"><i class="fas fa-layer-group" aria-hidden="true"></i></div>
+        <div class="qb-brand-copy">
+          <strong>מערכת נוכחות</strong>
+          <span>קישוריות וקובץ קונפיגורציה</span>
+        </div>
+      </div>
+      <div class="qb-side-user">
+        <div class="qb-side-avatar">AD</div>
+        <div>
+          <strong>ניהול</strong>
+          <span>קישוריות</span>
+        </div>
+      </div>
+      <nav class="qb-nav" aria-label="Primary">
+        <div class="qb-nav-group">
+          <span class="qb-nav-label">ניווט</span>
+          <a class="qb-nav-link" href="index.html"><i class="fas fa-border-all" aria-hidden="true"></i><span>בחירה</span></a>
+          <a class="qb-nav-link" href="attendance.html"><i class="fas fa-clipboard-list" aria-hidden="true"></i><span>נוכחות</span></a>
+          <a class="qb-nav-link" href="chat.html"><i class="fas fa-comments" aria-hidden="true"></i><span>צ'אט</span></a>
+          <a class="qb-nav-link active" href="admin.html"><i class="fas fa-cog" aria-hidden="true"></i><span>ניהול</span></a>
+        </div>
+      </nav>
+      <section class="qb-side-section" data-shell-notification-center="1">
+        <span class="qb-side-section-title">מוקדי בקרה</span>
+        <div class="qb-side-stack" data-notification-list>
+          <article class="qb-side-card active" data-fallback-notification="1">
+            <div class="qb-side-card-bar" style="background:#5b2d8e"></div>
+            <div>
+              <strong>קובץ קונפיגורציה</strong>
+              <span>בדיקת קישורים, ייצוא הגדרות ותיקוף מבנה הקובץ הנוכחי.</span>
+            </div>
+          </article>
+          <article class="qb-side-card" data-fallback-notification="1">
+            <div class="qb-side-card-bar" style="background:#0f6cbd"></div>
+            <div>
+              <strong>חזרה לניהול</strong>
+              <span>מכאן אפשר לחזור למרכז הניהול ולהמשיך בהגדרות המערכת.</span>
+            </div>
+          </article>
+        </div>
+      </section>
+    </aside>
+    <div class="qb-main">
+      <header class="qb-navbar">
+        <div class="qb-navbar-left">
+          <button type="button" class="qb-burger" data-sidebar-toggle="1" aria-controls="shellSidebar" aria-expanded="true" aria-label="הסתר תפריט">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div class="qb-navbar-copy">
+            <h1>קישוריות מערכת</h1>
+          </div>
+        </div>
+        <div class="qb-navbar-right">
+          <a class="qb-navbar-link" href="index.html"><span>בחירה</span></a>
+          <a class="qb-navbar-link" href="attendance.html"><span>נוכחות</span></a>
+          <a class="qb-navbar-link" href="chat.html"><span>צ'אט</span></a>
+          <a class="qb-navbar-link" href="admin.html"><span>ניהול</span></a>
+        </div>
+      </header>
+      <div class="qb-content">
+  <div class="app">
+    <section class="card head">
+      <div class="head-main">
+        <div class="head-icon" aria-hidden="true"><i class="fas fa-link"></i></div>
+        <div>
+          <h1>אשף התקנה ותיקון</h1>
+          <p class="meta">בדיקה, יצירה ותיקוף של רשימות SharePoint והשדות שהמערכת צריכה כדי לעבוד.</p>
+        </div>
+      </div>
+      <div class="actions">
+        <div class="actions-group">
+          <button id="checkConnectionsBtn" type="button" class="btn light">בדוק הכל</button>
+          <button id="fixConnectionsBtn" type="button" class="btn primary">התקן או תקן הכל</button>
+          <a class="link-btn" href="admin.html">חזרה לניהול</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="connections-tabs" id="connectionsTabs">
+        <button type="button" class="connections-tab active" data-connections-tab="wizard">אשף התקנה</button>
+        <button type="button" class="connections-tab" data-connections-tab="schema">עורך רשימות ושדות</button>
+      </div>
+    </section>
+
+    <div id="connectionsWizardPanel" class="connections-panel" data-connections-panel="wizard">
+      <section class="card">
+        <div class="toolbar">
+          <div>
+            <h2>מצב המערכת</h2>
+          </div>
+        </div>
+        <div id="status" class="status">טוען את חיבורי SharePoint...</div>
+        <div id="connectionSummary" class="wizard-summary"></div>
+        <div id="connectionWizard" class="wizard-grid"></div>
+      </section>
+
+      <section class="card">
+        <div class="toolbar">
+          <div>
+            <h2>ייבוא למאגר הראשי</h2>
+            <p class="meta">קבצי Excel, CSV או TXT נטענים לרשימת המקור הראשית ב-SharePoint. משם אפשר לשכפל נתונים לתאריכי הנוכחות היומיים.</p>
+          </div>
+          <div class="actions-group">
+            <button id="importSourceFileBtn" type="button" class="btn primary">ייבוא קובץ</button>
+            <input id="importSourceFileInput" type="file" accept=".xlsx,.xls,.csv,.txt,.tsv" class="visually-hidden">
+          </div>
+        </div>
+        <div id="sourceImportSummary" class="wizard-summary"></div>
+      </section>
+
+      <section class="card">
+        <div class="toolbar">
+          <div>
+            <h2>הגדרות פעילות</h2>
+          </div>
+        </div>
+        <div class="table-card">
+          <table class="admin-table">
+            <tbody id="configTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div id="connectionsSchemaPanel" class="connections-panel hidden" data-connections-panel="schema">
+      <section class="card">
+        <div class="toolbar">
+          <div>
+            <h2>עורך סכמות SharePoint</h2>
+            <p class="meta">בחירה אינטראקטיבית של רשימה, צפייה בשדות הקיימים, עדכון כותרות בטוחות והוספת שדות חדשים עם שמות פנימיים נקיים מתווים מיוחדים.</p>
+          </div>
+          <div class="actions-group">
+            <button id="schemaLoadBtn" type="button" class="btn light">טען רשימה</button>
+            <button id="schemaSanitizeAllBtn" type="button" class="btn primary">נקה כותרות ברשימה</button>
+          </div>
+        </div>
+        <div class="schema-editor-grid">
+          <div class="schema-side-card">
+            <div class="field">
+              <label for="schemaListSelect">רשימה לבחירה</label>
+              <select id="schemaListSelect"></select>
+            </div>
+            <div class="field">
+              <label for="schemaCustomListTitle">או שם רשימה מותאם</label>
+              <input id="schemaCustomListTitle" type="text" placeholder="אפשר לטעון או ליצור רשימה נוספת">
+            </div>
+            <div id="schemaEditorStatus" class="status">בחרו רשימה כדי לטעון את מבנה השדות.</div>
+            <div id="schemaSummary" class="wizard-summary"></div>
+            <div class="schema-preview" id="schemaEditorHint">שדות חדשים יקבלו כותרת נקייה ושם פנימי בטוח. תווים מיוחדים יוסרו, ורווחים יכווצו לרווח בודד.</div>
+            <div class="field">
+              <label for="schemaShowHiddenFields">
+                <input id="schemaShowHiddenFields" type="checkbox">
+                הצג גם שדות מוסתרים ומערכת
+              </label>
+            </div>
+          </div>
+          <div class="schema-side-card">
+            <div class="field">
+              <label for="schemaNewFieldLabel">כותרת שדה חדשה</label>
+              <input id="schemaNewFieldLabel" type="text" placeholder="למשל: סטטוס פינוי?">
+            </div>
+            <div class="field">
+              <label for="schemaNewFieldInternalName">שם פנימי רצוי</label>
+              <input id="schemaNewFieldInternalName" type="text" placeholder="אם יישאר ריק, ייווצר אוטומטית">
+            </div>
+            <div class="field">
+              <label for="schemaNewFieldType">סוג שדה</label>
+              <select id="schemaNewFieldType">
+                <option value="Text">Text</option>
+                <option value="Note">Note</option>
+                <option value="Choice">Choice</option>
+                <option value="DateTime">DateTime</option>
+                <option value="Number">Number</option>
+                <option value="Boolean">Boolean</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="schemaNewFieldRows">שורות ל-Note</label>
+              <input id="schemaNewFieldRows" type="number" min="2" max="20" value="4">
+            </div>
+            <div class="field">
+              <label for="schemaNewFieldOptions">אפשרויות ל-Choice</label>
+              <textarea id="schemaNewFieldOptions" placeholder="אפשרות 1, אפשרות 2"></textarea>
+            </div>
+            <div id="schemaNewFieldPreview" class="schema-preview">תצוגה מקדימה של הכותרת והשם הפנימי תופיע כאן.</div>
+            <div class="actions-group">
+              <button id="schemaAddFieldBtn" type="button" class="btn primary">הוסף שדה</button>
+              <button id="schemaResetFieldBtn" type="button" class="btn light">נקה טופס</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="toolbar">
+          <div>
+            <h2>שדות הרשימה</h2>
+          </div>
+        </div>
+        <div class="table-card">
+          <table class="schema-table">
+            <thead>
+              <tr>
+                <th>שם פנימי</th>
+                <th>כותרת נוכחית</th>
+                <th>סוג</th>
+                <th>מצב</th>
+                <th>פעולות</th>
+              </tr>
+            </thead>
+            <tbody id="schemaFieldsTableBody">
+              <tr><td colspan="5" class="schema-empty">בחרו רשימה כדי לראות את מבנה השדות שלה.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+      </div>
+    </div>
+  </div>
+
+  <script charset="utf-8" src="fontawesome/all.min.js"></script>
+  <script charset="utf-8" src="attendance.config.js?v=20260329-1"></script>
+  <script charset="utf-8" src="js/xlsx.full.min.js?v=20260311-9"></script>
+  <script charset="utf-8" src="js/attendance.app.js?v=20260329-1"></script>
+</body>
+</html>
+

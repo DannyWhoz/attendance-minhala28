@@ -1,0 +1,168 @@
+==4234329534=fsdfsd
+﻿<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="fontawesome/all.min.css">
+  <title>צ'אט</title>
+  <style>
+    body[data-page="chat"]{margin:0;min-height:100vh;background:#f5f5f5;color:var(--ms-text)}
+    body[data-page="chat"] .chat-side-section{padding:0 14px 14px}
+    body[data-page="chat"] .chat-layout{max-width:1560px;margin:0 auto;display:grid;gap:12px;grid-template-columns:minmax(280px,320px) minmax(0,1fr);min-height:calc(100vh - 104px)}
+    body[data-page="chat"] .chat-panel,body[data-page="chat"] .chat-board{display:grid;gap:14px;border:1px solid var(--ms-border);border-radius:10px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.08);min-height:0}
+    body[data-page="chat"] .chat-panel{padding:14px;align-content:start}
+    body[data-page="chat"] .chat-board{grid-template-rows:auto auto minmax(0,1fr) auto;padding:14px;background:#fff}
+    body[data-page="chat"] .chat-panel-head,body[data-page="chat"] .chat-board-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px}
+    body[data-page="chat"] .chat-panel-head h2,body[data-page="chat"] .chat-board-head h2{margin:0;font-size:18px;line-height:1.2}
+    body[data-page="chat"] .chat-panel-head p,body[data-page="chat"] .chat-board-head p,body[data-page="chat"] .chat-room-snippet,body[data-page="chat"] .chat-context-note,body[data-page="chat"] .chat-empty p{margin:0;color:var(--ms-muted);font-size:13px;line-height:1.65}
+    body[data-page="chat"] .chat-room-search,body[data-page="chat"] .chat-composer-input{width:100%;border:1px solid var(--ms-border);border-radius:6px;background:#fff;color:var(--ms-text);font:inherit;box-shadow:none;transition:border-color .18s ease,box-shadow .18s ease}
+    body[data-page="chat"] .chat-room-search{min-height:36px;padding:0 12px}
+    body[data-page="chat"] .chat-composer-input{min-height:46px;padding:10px 12px;resize:vertical}
+    body[data-page="chat"] .chat-room-search:focus,body[data-page="chat"] .chat-composer-input:focus{outline:0;border-color:rgba(91,45,142,.28);box-shadow:0 0 0 4px rgba(91,45,142,.08)}
+    body[data-page="chat"] .chat-room-list{display:grid;gap:6px;align-content:start;max-height:calc(100vh - 280px);overflow-y:auto;padding-left:2px}
+    body[data-page="chat"] .chat-room{width:100%;display:grid;gap:8px;padding:10px 12px;border:1px solid var(--ms-border);border-radius:8px;background:#fff;color:inherit;text-align:right;cursor:pointer;transition:background .16s ease,border-color .16s ease,transform .16s ease}
+    body[data-page="chat"] .chat-room:hover{background:#f5f5f5;transform:translateY(-1px)}
+    body[data-page="chat"] .chat-room.active{background:#f7f4fb;border-color:#d7c9ec;box-shadow:inset -3px 0 0 var(--ms-purple)}
+    body[data-page="chat"] .chat-room-line{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    body[data-page="chat"] .chat-room-title{font-size:14px;font-weight:700;color:var(--ms-text)}
+    body[data-page="chat"] .chat-room-time{color:var(--ms-muted);font-size:11px;white-space:nowrap}
+    body[data-page="chat"] .chat-room-meta{color:var(--ms-muted);font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}
+    body[data-page="chat"] .chat-room-pill{display:inline-flex;align-items:center;min-height:24px;padding:0 10px;border-radius:999px;background:#f3f2f1;color:var(--ms-muted);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+    body[data-page="chat"] .chat-board-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    body[data-page="chat"] .chat-link-btn,body[data-page="chat"] .chat-send-btn{min-height:32px;padding:0 12px;border:1px solid var(--ms-border);border-radius:6px;background:#fff;color:var(--ms-text);font:inherit;font-size:13px;font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+    body[data-page="chat"] .chat-send-btn{background:var(--ms-purple);border-color:var(--ms-purple);color:#fff;min-height:38px;padding-inline:16px}
+    body[data-page="chat"] .chat-link-btn:hover,body[data-page="chat"] .chat-send-btn:hover:not(:disabled){transform:translateY(-1px)}
+    body[data-page="chat"] .chat-link-btn:disabled,body[data-page="chat"] .chat-send-btn:disabled{opacity:.56;cursor:not-allowed;transform:none}
+    body[data-page="chat"] .chat-context{padding:10px 12px;border:1px solid var(--ms-border);border-radius:8px;background:#faf9f8}
+    body[data-page="chat"] .chat-messages{min-height:0;overflow-y:auto;display:grid;gap:10px;padding:4px 6px 4px 0;align-content:start}
+    body[data-page="chat"] .chat-day{display:flex;justify-content:center;margin:8px 0 2px}
+    body[data-page="chat"] .chat-day span{display:inline-flex;align-items:center;min-height:24px;padding:0 10px;border-radius:999px;background:#eef2f7;color:var(--ms-muted);font-size:11px;font-weight:700}
+    body[data-page="chat"] .message-row{display:flex}
+    body[data-page="chat"] .message-row.received{justify-content:flex-start}
+    body[data-page="chat"] .message-row.sent{justify-content:flex-end}
+    body[data-page="chat"] .message-bubble{max-width:min(100%,720px);display:grid;gap:8px;padding:10px 12px;border:1px solid #dfe5ef;border-radius:12px;background:#fff;box-shadow:none}
+    body[data-page="chat"] .message-row.sent .message-bubble{background:var(--ms-purple);border-color:var(--ms-purple);color:#fff}
+    body[data-page="chat"] .message-body{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.7}
+    body[data-page="chat"] .message-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;color:var(--ms-muted)}
+    body[data-page="chat"] .message-row.sent .message-meta{color:rgba(255,255,255,.82)}
+    body[data-page="chat"] .chat-empty{display:grid;place-items:center;min-height:100%;padding:32px 18px;text-align:center}
+    body[data-page="chat"] .chat-empty strong{display:block;margin-bottom:8px;font-size:20px}
+    body[data-page="chat"] .chat-composer{display:grid;gap:12px;padding-top:4px}
+    body[data-page="chat"] .chat-composer-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+    body[data-page="chat"] .chat-composer-note{color:var(--ms-muted);font-size:12px;line-height:1.6}
+    body[data-page="chat"] .chat-mini-status{min-height:28px;padding:0 10px;border-radius:999px;background:#f8fafc;border:1px solid var(--ms-border);color:var(--ms-muted);display:inline-flex;align-items:center;font-size:11px;font-weight:700}
+    body[data-page="chat"] .chat-mini-status.err{background:#fff3f2;border-color:#f2cac7;color:#b42318}
+    body[data-page="chat"] .chat-mini-status.ok{background:#f0fdf4;border-color:#cfe9d8;color:#166534}
+    @media (max-width:1180px){body[data-page="chat"] .chat-layout{grid-template-columns:1fr}body[data-page="chat"] .chat-room-list{max-height:22rem}}
+    @media (max-width:640px){body[data-page="chat"] .qb-content,body[data-page="chat"] .chat-panel,body[data-page="chat"] .chat-board{padding:12px}body[data-page="chat"] .chat-layout{min-height:auto}}
+  </style>
+  <link rel="stylesheet" href="attendance.theme.css?v=20260326-45">
+</head>
+<body data-page="chat">
+  <div class="qb-shell">
+    <aside id="shellSidebar" class="qb-sidebar">
+      <div class="qb-rail">
+        <a class="qb-rail-anchor" href="index.html" aria-label="בחירה"><i class="fas fa-border-all" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="attendance.html" aria-label="נוכחות"><i class="fas fa-calendar-check" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor active" href="chat.html" aria-label="צ'אט"><i class="fas fa-comments" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor hidden" data-admin-sidebar-only="true" href="admin.html" aria-label="ניהול"><i class="fas fa-cog" aria-hidden="true"></i></a>
+        <div class="qb-rail-spacer"></div>
+        <div id="chatSidebarRailAvatar" class="qb-rail-avatar" aria-hidden="true">OP</div>
+      </div>
+      <div class="qb-brand">
+        <div class="qb-brand-mark"><i class="fas fa-layer-group" aria-hidden="true"></i></div>
+        <div class="qb-brand-copy">
+          <strong>מערכת נוכחות</strong>
+          <span>קבוצות, חדרים קבועים ושיחות ישירות</span>
+        </div>
+      </div>
+      <div class="qb-side-user">
+        <div id="chatSidebarAvatar" class="qb-side-avatar">OP</div>
+        <div>
+          <strong id="chatSidebarTitle">מפעיל</strong>
+          <span id="chatSidebarSubtitle">צ'אט</span>
+        </div>
+      </div>
+      <nav class="qb-nav" aria-label="Primary">
+        <div class="qb-nav-group">
+          <span class="qb-nav-label">ניווט</span>
+          <a class="qb-nav-link" href="index.html"><i class="fas fa-border-all" aria-hidden="true"></i><span>בחירה</span></a>
+          <a class="qb-nav-link" href="attendance.html"><i class="fas fa-clipboard-list" aria-hidden="true"></i><span>נוכחות</span></a>
+          <a class="qb-nav-link active" href="chat.html"><i class="fas fa-comments" aria-hidden="true"></i><span>צ'אט</span></a>
+          <a class="qb-nav-link hidden" data-admin-sidebar-only="true" href="admin.html"><i class="fas fa-cog" aria-hidden="true"></i><span>ניהול</span></a>
+        </div>
+      </nav>
+      <section class="qb-side-section chat-side-section" data-shell-notification-center="1">
+        <span class="qb-side-section-title">איך זה עובד</span>
+        <div class="qb-side-stack" data-notification-list></div>
+      </section>
+    </aside>
+    <div class="qb-main">
+      <header class="qb-navbar">
+        <div class="qb-navbar-left">
+          <button type="button" class="qb-burger" data-sidebar-toggle="1" aria-controls="shellSidebar" aria-expanded="true" aria-label="הסתר תפריט">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div class="qb-navbar-copy">
+            <h1 id="chatNavbarTitle">צ'אט מערכת</h1>
+          </div>
+        </div>
+        <div class="qb-navbar-right">
+          <a class="qb-navbar-link" href="index.html"><span>בחירה</span></a>
+          <a class="qb-navbar-link" href="attendance.html"><span>נוכחות</span></a>
+        </div>
+      </header>
+      <div class="qb-content">
+        <div class="chat-layout">
+          <aside class="chat-panel">
+            <div class="chat-panel-head">
+              <div>
+                <h2>חדרים ושיחות</h2>
+                <p>כאן תמצאו את צ'אט הקבוצה הפעיל, חדרים קבועים שהוגדרו על ידי האדמין ושיחות ישירות.</p>
+              </div>
+              <button id="chatRefreshBtn" type="button" class="chat-link-btn">רענון</button>
+            </div>
+            <input id="chatRoomSearch" class="chat-room-search" type="search" placeholder="חיפוש לפי קבוצה, חדר או הודעה...">
+            <section id="chatContactSection" class="chat-direct-section hidden" aria-label="שיחות ישירות">
+              <div class="chat-direct-label">ישיר עם</div>
+              <div id="chatContactList" class="chat-contact-list"></div>
+            </section>
+            <div id="chatRoomList" class="chat-room-list"></div>
+          </aside>
+          <section class="chat-board">
+            <div class="chat-board-head">
+              <div>
+                <span id="chatRoomScope" class="chat-room-pill">טוען...</span>
+                <h2 id="chatRoomTitle">טוען צ'אט</h2>
+                <p id="chatRoomMeta">טוען שיחה פעילה.</p>
+              </div>
+              <div class="chat-board-actions">
+                <span id="chatStatus" class="chat-mini-status">מתחבר ל-SharePoint...</span>
+              </div>
+            </div>
+            <div class="chat-context">
+              <p id="chatContextNote" class="chat-context-note">השיחה הזו משויכת לקבוצה, לחדר קבוע או לשיחה ישירה פעילה.</p>
+            </div>
+            <div id="chatMessages" class="chat-messages"></div>
+            <form id="chatComposer" class="chat-composer">
+              <textarea id="chatMessageInput" class="chat-composer-input" rows="3" placeholder="כתבו הודעה קצרה לצוות..."></textarea>
+              <div class="chat-composer-actions">
+                <p class="chat-composer-note">הודעות חדשות מתעדכנות אוטומטית כל כמה שניות כשחלון הצ'אט פתוח.</p>
+                <button id="chatSendBtn" type="submit" class="chat-send-btn">שלח הודעה</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script charset="utf-8" src="fontawesome/all.min.js"></script>
+  <script charset="utf-8" src="attendance.config.js?v=20260311-9"></script>
+  <script charset="utf-8" src="js/attendance.app.js?v=20260326-21"></script>
+  <script charset="utf-8" src="js/attendance.chatpage.js?v=20260326-05"></script>
+</body>
+</html>

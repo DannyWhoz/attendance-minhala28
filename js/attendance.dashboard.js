@@ -1,0 +1,1695 @@
+(() => {
+  'use strict';
+
+  const App = window.AttendanceApp;
+  const ChartCtor = window.Chart;
+  if (!App || !document.body) return;
+
+  const PALETTES = {
+    ocean: ['#33214b', '#4a3e77', '#0f6ea8', '#35a8d8', '#84d2f6', '#d7a448'],
+    aurora: ['#663399', '#7b5bc7', '#8f7dff', '#25b7c9', '#f0b342', '#f06a6a'],
+    citrus: ['#8c4b14', '#d77925', '#f0b342', '#ffd978', '#5d55c7', '#33214b'],
+    sunset: ['#6a2c70', '#9b3f72', '#f06a6a', '#f49b3f', '#ffd978', '#5b86f1'],
+    forest: ['#2d5a40', '#2f7f5f', '#49b86e', '#8bcf65', '#d7a448', '#663399'],
+    slate: ['#33214b', '#4b556b', '#667085', '#8b95ab', '#c7cedb', '#d77925'],
+    berry: ['#4c1d95', '#663399', '#8b5cf6', '#c084fc', '#f06a8b', '#f0b342'],
+    rose: ['#7b1e4a', '#b83280', '#e65c93', '#f59eb2', '#ffd1dc', '#7b5bc7']
+  };
+  const THEME_FONT = 'Open Sans, Heebo, Segoe UI, Arial, sans-serif';
+
+  const STRINGS = {
+    noData: '\u05d0\u05d9\u05df \u05e0\u05ea\u05d5\u05e0\u05d9\u05dd \u05dc\u05d4\u05e6\u05d2\u05d4 \u05d1\u05db\u05e8\u05d8\u05d9\u05e1 \u05d4\u05d6\u05d4.',
+    noWidgets: '\u05d0\u05d9\u05df \u05d2\u05e8\u05e4\u05d9\u05dd.',
+    missingChart: '\u05d4\u05e1\u05e4\u05e8\u05d9\u05d9\u05d4 Chart.js \u05dc\u05d0 \u05e0\u05d8\u05e2\u05e0\u05d4.',
+    metricCount: '\u05e1\u05e4\u05d9\u05e8\u05d4',
+    total: '\u05e1\u05d4\u05db',
+    undefined: '\u05dc\u05dc\u05d0 \u05d4\u05d2\u05d3\u05e8\u05d4',
+    uncategorized: '\u05dc\u05dc\u05d0 \u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d4',
+    adminCategoriesLabel: '\u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d5\u05ea \u05de\u05e0\u05d4\u05dc',
+    previewNote: '\u05ea\u05e6\u05d5\u05d2\u05d4 \u05de\u05e7\u05d3\u05d9\u05de\u05d4 \u05e2\u05dc \u05d4\u05e7\u05d5\u05d1\u05e5 \u05d4\u05de\u05e7\u05d5\u05e8',
+    visibleNote: '\u05de\u05d4 \u05e9\u05de\u05d5\u05e6\u05d2 \u05db\u05e8\u05d2\u05e2',
+    allDataNote: '\u05db\u05dc \u05d4\u05e0\u05ea\u05d5\u05e0\u05d9\u05dd'
+  };
+  const GROUP_CATEGORY_FIELD = App.DASHBOARD_SPECIAL_FIELDS && App.DASHBOARD_SPECIAL_FIELDS.GROUP_CATEGORY
+    ? App.DASHBOARD_SPECIAL_FIELDS.GROUP_CATEGORY
+    : '__group_category__';
+  const DASHBOARD_MAX_ITEMS_LIMIT = 100;
+  const dashboard_max_items_limit = DASHBOARD_MAX_ITEMS_LIMIT;
+  const ATTENDANCE_SCOPE_OPTIONS = Object.freeze([
+    { value: 'widget-default', label: 'לפי כרטיס' },
+    { value: 'current-view', label: 'תצוגה' },
+    { value: 'selected-group', label: 'קבוצה' },
+    { value: 'selected-day', label: 'יום' },
+    { value: 'all-open-dates', label: 'כל התאריכים' }
+  ]);
+
+  const adminCache = {
+    workbookUrl: '',
+    headers: [],
+    rows: [],
+    previewTimer: 0,
+    dashboardTimer: 0,
+    unitsTimer: 0,
+    previewRenderId: 0,
+    dashboardRenderId: 0,
+    previewReady: false,
+    dashboardReady: false,
+    previewPending: false,
+    previewPendingForce: false,
+    dashboardPending: false,
+    dashboardPendingForce: false,
+    observer: null,
+    bound: false
+  };
+  const attendanceCache = {
+    key: '',
+    settings: null,
+    headers: [],
+    allRows: [],
+    scopedRows: [],
+    aggregateKey: '',
+    aggregateHeaders: [],
+    aggregateAllRows: [],
+    aggregateScopedRows: [],
+    aggregateDateKeys: [],
+    renderId: 0,
+    rendering: false,
+    opening: false
+  };
+  const previewCharts = [];
+  const adminDashboardCharts = [];
+  const attendanceCharts = [];
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function esc(value) {
+    return App.escapeHtml ? App.escapeHtml(value) : String(value || '');
+  }
+
+  function cellsOf(row) {
+    if (row && Array.isArray(row.currentCells)) return row.currentCells;
+    if (row && Array.isArray(row.cells)) return row.cells;
+    return [];
+  }
+
+  function selectedValues(select) {
+    if (!(select instanceof HTMLSelectElement)) return [];
+    return Array.from(select.selectedOptions).map((option) => String(option.value || '').trim()).filter(Boolean);
+  }
+
+  function paletteFor(widget) {
+    const custom = Array.isArray(widget && widget.customColors) ? widget.customColors.filter(Boolean) : [];
+    if (custom.length) return custom;
+    const key = String(widget && widget.palette || 'aurora').trim().toLowerCase();
+    return PALETTES[key] || PALETTES.aurora;
+  }
+
+  function rgba(hex, alpha) {
+    const safe = String(hex || '').replace('#', '').trim();
+    if (!/^[0-9a-f]{6}$/i.test(safe)) return `rgba(102,51,153,${alpha})`;
+    return `rgba(${parseInt(safe.slice(0, 2), 16)},${parseInt(safe.slice(2, 4), 16)},${parseInt(safe.slice(4, 6), 16)},${alpha})`;
+  }
+
+  function hexToRgb(hex) {
+    const safe = String(hex || '').replace('#', '').trim();
+    if (!/^[0-9a-f]{6}$/i.test(safe)) return { r: 102, g: 51, b: 153 };
+    return {
+      r: parseInt(safe.slice(0, 2), 16),
+      g: parseInt(safe.slice(2, 4), 16),
+      b: parseInt(safe.slice(4, 6), 16)
+    };
+  }
+
+  function rgbToHex(r, g, b) {
+    return `#${[r, g, b].map((value) => {
+      const safe = Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+      return safe.toString(16).padStart(2, '0');
+    }).join('')}`;
+  }
+
+  function tintColor(hex, amount) {
+    const color = hexToRgb(hex);
+    const shift = Math.max(0, Math.min(1, Number(amount) || 0));
+    return rgbToHex(
+      color.r + ((255 - color.r) * shift),
+      color.g + ((255 - color.g) * shift),
+      color.b + ((255 - color.b) * shift)
+    );
+  }
+
+  function shadeColor(hex, amount) {
+    const color = hexToRgb(hex);
+    const shift = Math.max(0, Math.min(1, Number(amount) || 0));
+    return rgbToHex(
+      color.r * (1 - shift),
+      color.g * (1 - shift),
+      color.b * (1 - shift)
+    );
+  }
+
+  function buildColorSeries(widget, count) {
+    const base = paletteFor(widget);
+    const total = Math.max(1, Number(count || 0));
+    const colors = [];
+    for (let index = 0; index < total; index += 1) {
+      const seed = base[index % base.length];
+      const cycle = Math.floor(index / base.length);
+      if (!cycle) {
+        colors.push(seed);
+        continue;
+      }
+      const shift = Math.min(0.18 * cycle, 0.42);
+      colors.push(cycle % 2 ? tintColor(seed, shift) : shadeColor(seed, shift * 0.75));
+    }
+    return colors;
+  }
+
+  function gradientFill(context, color, topAlpha, bottomAlpha) {
+    if (!context || !context.chart) return rgba(color, topAlpha);
+    const chart = context.chart;
+    const area = chart.chartArea;
+    if (!area) return rgba(color, topAlpha);
+    const gradient = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+    gradient.addColorStop(0, rgba(color, topAlpha));
+    gradient.addColorStop(1, rgba(color, bottomAlpha));
+    return gradient;
+  }
+
+  function formatShare(value, total) {
+    const numeric = Number(value);
+    const safeTotal = Number(total);
+    if (!Number.isFinite(numeric) || !Number.isFinite(safeTotal) || safeTotal <= 0) return '';
+    const percent = (numeric / safeTotal) * 100;
+    return percent >= 10 ? `${percent.toFixed(0)}%` : `${percent.toFixed(1)}%`;
+  }
+
+  function chartTypeLabel(value) {
+    const key = String(value || '').trim().toLowerCase();
+    const labels = {
+      stacked: 'Stacked',
+      bar: 'Bar',
+      line: 'Line',
+      area: 'Area',
+      pie: 'Pie',
+      donut: 'Donut',
+      radar: 'Radar',
+      radial: 'Radial',
+      polar: 'Polar',
+      heatmap: 'Heatmap',
+      progress: 'Progress',
+      table: 'Cross Table',
+      metric: 'Metric'
+    };
+    return labels[key] || (key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Chart');
+  }
+
+  function destroyCharts(store) {
+    while (store.length) {
+      const chart = store.pop();
+      try {
+        if (chart && chart.canvas) chart.canvas.style.pointerEvents = 'none';
+        if (chart && chart.options) chart.options.events = [];
+        if (chart && typeof chart.stop === 'function') chart.stop();
+        if (chart && typeof chart.unbindEvents === 'function') chart.unbindEvents();
+        if (chart) chart._active = [];
+        if (chart && typeof chart.setActiveElements === 'function') chart.setActiveElements([]);
+        if (chart && chart.tooltip && typeof chart.tooltip.setActiveElements === 'function') {
+          chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+        }
+        if (chart && chart.tooltip) {
+          chart.tooltip._active = [];
+          chart.tooltip.opacity = 0;
+        }
+      } catch (error) {}
+      try {
+        chart.destroy();
+      } catch (error) {}
+    }
+  }
+
+  function formatValue(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return String(value || '');
+    if (Math.abs(numeric - Math.round(numeric)) < 0.00001) return App.formatNumber(Math.round(numeric));
+    return numeric.toFixed(1);
+  }
+
+  function numericValue(value) {
+    const text = String(value || '').trim();
+    if (!text) return NaN;
+    const normalized = text.replace(/[\u200f\u200e\s]/g, '').replace(/,/g, '');
+    const numeric = Number(normalized);
+    return Number.isFinite(numeric) ? numeric : NaN;
+  }
+
+  function buildGroupCategoryLookup(settings) {
+    const groupColumns = App.normalizeColumnList(settings && settings.groupColumns, ['A']);
+    const keyToLabels = new Map();
+    App.resolveGroupCategories(settings, groupColumns).forEach((category) => {
+      const label = String(category && category.label ? category.label : '').trim();
+      if (!label) return;
+      (Array.isArray(category.selections) ? category.selections : []).forEach((selection) => {
+        const key = App.buildGroupSelectionKey(selection, groupColumns);
+        if (!key) return;
+        if (!keyToLabels.has(key)) keyToLabels.set(key, []);
+        const labels = keyToLabels.get(key);
+        if (!labels.includes(label)) labels.push(label);
+      });
+    });
+    return { groupColumns, keyToLabels };
+  }
+
+  function fieldLabel(headers, field) {
+    if (field === GROUP_CATEGORY_FIELD) return STRINGS.adminCategoriesLabel;
+    const index = App.columnLetterToIndex(field);
+    return index >= 0 ? String(headers[index] || field) : String(field || '');
+  }
+
+  function fieldValue(cells, field, groupCategoryLookup) {
+    if (field === GROUP_CATEGORY_FIELD) {
+      const values = {};
+      (groupCategoryLookup.groupColumns || []).forEach((letter) => {
+        const index = App.columnLetterToIndex(letter);
+        const text = index >= 0 ? String(cells[index] || '').trim() : '';
+        if (text) values[letter] = text;
+      });
+      const key = App.buildGroupSelectionKey(values, groupCategoryLookup.groupColumns || ['A']);
+      const labels = key && groupCategoryLookup.keyToLabels.has(key) ? groupCategoryLookup.keyToLabels.get(key) : [];
+      return labels && labels.length ? labels.join(' / ') : STRINGS.uncategorized;
+    }
+    const index = App.columnLetterToIndex(field);
+    return index >= 0 ? String(cells[index] || '').trim() : '';
+  }
+
+  function compositeLabel(cells, fields, groupCategoryLookup) {
+    const parts = (Array.isArray(fields) ? fields : [])
+      .map((field) => fieldValue(cells, field, groupCategoryLookup))
+      .filter(Boolean);
+    return parts.join(' / ') || STRINGS.undefined;
+  }
+
+  function headerLabel(headers, fields) {
+    const parts = (Array.isArray(fields) ? fields : []).map((field) => fieldLabel(headers, field)).filter(Boolean);
+    return parts.join(' / ') || STRINGS.undefined;
+  }
+
+  function buildRowsFromMatrix(matrix, columnCount) {
+    const rows = [];
+    for (let rowIndex = 1; rowIndex < (matrix || []).length; rowIndex += 1) {
+      const source = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const cells = [];
+      for (let colIndex = 0; colIndex < columnCount; colIndex += 1) {
+        cells.push(String(source[colIndex] || ''));
+      }
+      if (!cells.some((cell) => String(cell || '').trim())) continue;
+      rows.push({ cells, excelRow: rowIndex + 1 });
+    }
+    return rows;
+  }
+
+  function sortByValue(list) {
+    return list.slice().sort((left, right) => {
+      if (right.value !== left.value) return right.value - left.value;
+      return String(left.label || '').localeCompare(String(right.label || ''), 'he', { numeric: true, sensitivity: 'base' });
+    });
+  }
+
+  function createBucket() {
+    return { count: 0, sum: 0, min: null, max: null };
+  }
+
+  function updateBucket(bucket, aggregation, rawValue) {
+    bucket.count += 1;
+    if (aggregation === 'count') return;
+    if (!Number.isFinite(rawValue)) return;
+    bucket.sum += rawValue;
+    if (bucket.min === null || rawValue < bucket.min) bucket.min = rawValue;
+    if (bucket.max === null || rawValue > bucket.max) bucket.max = rawValue;
+  }
+
+  function finalizeBucket(bucket, aggregation) {
+    if (!bucket) return 0;
+    if (aggregation === 'count') return bucket.count;
+    if (aggregation === 'sum') return bucket.sum;
+    if (aggregation === 'avg') return bucket.count ? (bucket.sum / bucket.count) : 0;
+    if (aggregation === 'min') return bucket.min === null ? 0 : bucket.min;
+    if (aggregation === 'max') return bucket.max === null ? 0 : bucket.max;
+    return bucket.count;
+  }
+
+  function niceStep(maxValue, manualStep) {
+    const forced = Number(manualStep || 0);
+    if (Number.isFinite(forced) && forced > 0) return forced;
+    const max = Math.max(0, Number(maxValue || 0));
+    if (!max) return 1;
+    if (max <= 5) return 1;
+    const rough = max / 5;
+    const magnitude = 10 ** Math.floor(Math.log10(rough));
+    const normalized = rough / magnitude;
+    const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+    return step * magnitude;
+  }
+
+  function spanToGrid(spanValue) {
+    return Number(spanValue || 1) >= 2 ? 12 : 6;
+  }
+
+  function widgetScopeRows(dataset, widget) {
+    if (widget.dataScope === 'all') return dataset.allRows;
+    if (widget.dataScope === 'visible') return dataset.visibleRows;
+    return dataset.scopedRows;
+  }
+
+  function normalizeAttendanceDashboardScope(value) {
+    const key = String(value || '').trim().toLowerCase();
+    return ATTENDANCE_SCOPE_OPTIONS.some((option) => option.value === key) ? key : 'widget-default';
+  }
+
+  function attendanceSelectionGroups(selection) {
+    if (Array.isArray(selection && selection.groupSelections) && selection.groupSelections.length) {
+      return selection.groupSelections;
+    }
+    if (selection && selection.groupValues && Object.keys(selection.groupValues).length) {
+      return [selection.groupValues];
+    }
+    return [];
+  }
+
+  function currentAttendanceDashboardScope() {
+    return normalizeAttendanceDashboardScope(App.loadSelection().dashboardScope);
+  }
+
+  function saveAttendanceDashboardScope(value) {
+    const selection = App.loadSelection();
+    selection.dashboardScope = normalizeAttendanceDashboardScope(value);
+    App.saveSelection(selection);
+    return selection.dashboardScope;
+  }
+
+  function renderAttendanceScopeControls(activeScope, metaText) {
+    const current = normalizeAttendanceDashboardScope(activeScope);
+    const toggle = byId('dashboardScopeToggle');
+    const meta = byId('dashboardScopeMeta');
+    if (toggle) {
+      Array.from(toggle.querySelectorAll('button[data-dashboard-scope]')).forEach((button) => {
+        const match = String(button.getAttribute('data-dashboard-scope') || '') === current;
+        button.classList.toggle('is-active', match);
+        button.setAttribute('aria-pressed', String(match));
+      });
+    }
+    if (meta) meta.textContent = String(metaText || '').trim();
+  }
+
+  function filterAttendanceRowsForSelection(rows, selection) {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    if (selection && selection.adminMode) return safeRows.slice();
+    const groups = attendanceSelectionGroups(selection);
+    if (!groups.length) return safeRows.slice();
+    return safeRows.filter((row) => groups.some((group) => App.matchesColumnValues(cellsOf(row), group)));
+  }
+
+  function buildWidgetModel(rows, headers, widget, settings) {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const safeWidget = {
+      ...widget,
+      rowColumns: App.normalizeDashboardFieldList ? App.normalizeDashboardFieldList(widget && widget.rowColumns, []) : (Array.isArray(widget && widget.rowColumns) ? widget.rowColumns : []),
+      colColumns: App.normalizeDashboardFieldList ? App.normalizeDashboardFieldList(widget && widget.colColumns, []) : (Array.isArray(widget && widget.colColumns) ? widget.colColumns : [])
+    };
+    const aggregation = String(safeWidget.aggregation || 'count').trim().toLowerCase();
+    const valueIndex = App.columnLetterToIndex(safeWidget.valueColumn || '');
+    const groupCategoryLookup = buildGroupCategoryLookup(settings || {});
+    const categoryBuckets = new Map();
+    const seriesBuckets = new Map();
+    const pairBuckets = new Map();
+    const overall = createBucket();
+
+    safeRows.forEach((row) => {
+      const cells = cellsOf(row);
+      const category = compositeLabel(cells, safeWidget.rowColumns, groupCategoryLookup);
+      const series = Array.isArray(safeWidget.colColumns) && safeWidget.colColumns.length ? compositeLabel(cells, safeWidget.colColumns, groupCategoryLookup) : STRINGS.total;
+      let rawValue = 1;
+      if (aggregation !== 'count') {
+        if (valueIndex < 0) return;
+        rawValue = numericValue(cells[valueIndex]);
+        if (!Number.isFinite(rawValue)) return;
+      }
+      if (!categoryBuckets.has(category)) categoryBuckets.set(category, createBucket());
+      if (!seriesBuckets.has(series)) seriesBuckets.set(series, createBucket());
+      const pairKey = `${category}\u0001${series}`;
+      if (!pairBuckets.has(pairKey)) pairBuckets.set(pairKey, createBucket());
+      updateBucket(categoryBuckets.get(category), aggregation, rawValue);
+      updateBucket(seriesBuckets.get(series), aggregation, rawValue);
+      updateBucket(pairBuckets.get(pairKey), aggregation, rawValue);
+      updateBucket(overall, aggregation, rawValue);
+    });
+
+    const rowLimit = Math.min(dashboard_max_items_limit, Math.max(3, Number(safeWidget.maxItems || 8) || 8));
+    const seriesLimit = Array.isArray(safeWidget.colColumns) && safeWidget.colColumns.length
+      ? (safeWidget.chartType === 'table'
+        ? rowLimit
+        : (safeWidget.chartType === 'heatmap'
+          ? Math.min(24, rowLimit)
+          : 6))
+      : 1;
+    const categories = sortByValue(Array.from(categoryBuckets.entries()).map(([label, bucket]) => ({ label, value: finalizeBucket(bucket, aggregation) })))
+      .slice(0, rowLimit);
+    const series = sortByValue(Array.from(seriesBuckets.entries()).map(([label, bucket]) => ({ label, value: finalizeBucket(bucket, aggregation) })))
+      .slice(0, seriesLimit);
+
+    const categoryColors = buildColorSeries(widget, categories.length || 1);
+    const seriesColors = buildColorSeries(widget, Math.max(series.length || 1, 1));
+    const datasetSeries = (series.length ? series : [{ label: STRINGS.total, value: finalizeBucket(overall, aggregation) }]).map((item, index) => {
+      return {
+        label: item.label,
+        value: item.value,
+        color: seriesColors[index % seriesColors.length]
+      };
+    });
+
+    const matrixRows = categories.map((category) => {
+      const values = datasetSeries.map((seriesItem) => finalizeBucket(pairBuckets.get(`${category.label}\u0001${seriesItem.label}`), aggregation));
+      return {
+        label: category.label,
+        values,
+        total: category.value
+      };
+    });
+
+    const accentColor = datasetSeries[0] ? datasetSeries[0].color : (categoryColors[0] || '#663399');
+    const accentSecondary = datasetSeries[1]
+      ? datasetSeries[1].color
+      : (categoryColors[1] || tintColor(accentColor, 0.34));
+
+    return {
+      widget: safeWidget,
+      headers,
+      rows: safeRows,
+      aggregation,
+      totalValue: finalizeBucket(overall, aggregation),
+      totalRows: safeRows.length,
+      rowLabel: headerLabel(headers, safeWidget.rowColumns),
+      colLabel: headerLabel(headers, safeWidget.colColumns),
+      valueLabel: safeWidget.valueColumn ? headerLabel(headers, [safeWidget.valueColumn]) : STRINGS.metricCount,
+      categories: categories.map((item) => item.label),
+      categoryItems: categories,
+      categoryColors,
+      series: datasetSeries,
+      matrixRows,
+      maxValue: Math.max(0, ...matrixRows.flatMap((row) => row.values.length ? row.values : [row.total])),
+      accentColor,
+      accentSecondary,
+      emptyReason: aggregation !== 'count' && valueIndex < 0 ? '\u05dc\u05d2\u05e8\u05e3 \u05d4\u05d6\u05d4 \u05d7\u05d9\u05d9\u05d1\u05d9\u05dd \u05dc\u05d1\u05d7\u05d5\u05e8 \u05e2\u05de\u05d5\u05d3\u05ea \u05e2\u05e8\u05da \u05de\u05e1\u05e4\u05e8\u05d9\u05ea.' : ''
+    };
+  }
+
+  function renderSummaryCards(rows, settings, widgetCount) {
+    const groups = new Set((rows || []).map((row) => compositeLabel(cellsOf(row), settings.groupColumns || ['A'])).filter(Boolean)).size;
+    const editableColumns = Array.isArray(settings.editableColumns) ? settings.editableColumns : [];
+    const withValues = (rows || []).filter((row) => editableColumns.some((letter) => {
+      const index = App.columnLetterToIndex(letter);
+      return index >= 0 && String(cellsOf(row)[index] || '').trim();
+    })).length;
+    const cards = [
+      { value: rows.length, label: '\u05e8\u05e9\u05d5\u05de\u05d5\u05ea' },
+      { value: groups, label: '\u05e7\u05d1\u05d5\u05e6\u05d5\u05ea / \u05d9\u05d7\u05d9\u05d3\u05d5\u05ea' },
+      { value: withValues, label: '\u05d1\u05e2\u05dc\u05d9 \u05e1\u05d8\u05d8\u05d5\u05e1 / \u05e2\u05e8\u05db\u05d9 \u05e2\u05d3\u05db\u05d5\u05df' },
+      { value: widgetCount, label: '\u05d5\u05d9\u05d3\u05d2\u05d8\u05d9\u05dd \u05e4\u05e2\u05d9\u05dc\u05d9\u05dd' }
+    ];
+    return cards.map((card) => {
+      return `<div class="dash-summary-card"><strong>${esc(formatValue(card.value))}</strong><span>${esc(card.label)}</span></div>`;
+    }).join('');
+  }
+
+  function renderDashboardEmptyState(message, detail) {
+    return `
+      <div class="dash-empty dash-empty-rich">
+        <span class="dash-empty-icon" aria-hidden="true"><i class="fas fa-chart-line"></i></span>
+        <strong>${esc(message)}</strong>
+        <span>${esc(detail || '')}</span>
+      </div>
+    `;
+  }
+
+  function describeDashboardLoadError(error, fallback) {
+    const message = String(error && error.message ? error.message : error || '').trim();
+    if (/failed to fetch/i.test(message)) {
+      return 'לא הצלחנו להגיע כרגע ל-SharePoint או לקובץ המקור. בדקו הרשאות, קישור ושם רשימה ונסו שוב.';
+    }
+    return message || String(fallback || 'הטעינה לא הושלמה. נסו לרענן שוב בעוד רגע.');
+  }
+
+  function renderMetricWidget(model) {
+    const chips = model.categoryItems.slice(0, 6).map((item, index) => {
+      const chipColor = model.categoryColors[index] || model.accentColor;
+      return `<span class="dash-chip" style="--chip:${chipColor};">${esc(item.label)}: ${esc(formatValue(item.value))}</span>`;
+    }).join('');
+    return `<div class="dash-metric"><strong>${esc(formatValue(model.totalValue))}</strong><span>${esc(model.valueLabel)} | ${esc(model.rowLabel)}</span><div class="dash-chip-list">${chips || `<span class="dash-chip">${esc(STRINGS.noData)}</span>`}</div></div>`;
+  }
+
+  function renderProgressWidget(model) {
+    const max = Math.max(1, ...model.categoryItems.map((item) => Number(item.value || 0)));
+    const total = model.categoryItems.reduce((sum, item) => sum + Number(item.value || 0), 0);
+    const rows = model.categoryItems.slice(0, 8).map((item, index) => {
+      const value = Number(item.value || 0);
+      const color = model.categoryColors[index] || model.accentColor;
+      const width = value > 0 ? Math.max(6, Math.round((value / max) * 100)) : 0;
+      const share = formatShare(value, total);
+      return `
+        <div class="dash-progress-row">
+          <div class="dash-progress-head">
+            <strong>${esc(item.label)}</strong>
+            <span>${esc(formatValue(value))}${share ? ` | ${esc(share)}` : ''}</span>
+          </div>
+          <div class="dash-progress-track">
+            <span class="dash-progress-fill" style="width:${width}%;--bar:${color};"></span>
+          </div>
+        </div>
+      `;
+    }).join('');
+    return `<div class="dash-progress-list">${rows || `<div class="dash-empty">${esc(STRINGS.noData)}</div>`}</div>`;
+  }
+
+  function totalsRow(model) {
+    return {
+      label: STRINGS.total,
+      values: model.series.map((series) => Number(series.value || 0)),
+      total: Number(model.totalValue || 0)
+    };
+  }
+
+  function renderTableWidget(model) {
+    const showTotals = model.widget.showTotals !== false;
+    const head = model.series.map((series) => `<th>${esc(series.label)}</th>`).join('');
+    const bodyRows = model.matrixRows.map((row) => {
+      return `<tr><th>${esc(row.label)}</th>${row.values.map((value) => `<td>${esc(formatValue(value))}</td>`).join('')}${showTotals ? `<td class="dash-total-cell">${esc(formatValue(row.total))}</td>` : ''}</tr>`;
+    });
+    if (showTotals) {
+      const summary = totalsRow(model);
+      bodyRows.push(`<tr class="dash-total-row"><th>${esc(summary.label)}</th>${summary.values.map((value) => `<td class="dash-total-cell">${esc(formatValue(value))}</td>`).join('')}<td class="dash-total-cell">${esc(formatValue(summary.total))}</td></tr>`);
+    }
+    return `<div class="dash-table"><table><thead><tr><th>${esc(model.rowLabel)}</th>${head}${showTotals ? `<th>${esc(STRINGS.total)}</th>` : ''}</tr></thead><tbody>${bodyRows.join('')}</tbody></table></div>`;
+  }
+
+  function renderHeatmapWidget(model) {
+    const showTotals = model.widget.showTotals !== false;
+    // Keep the heat scale based on the actual matrix cells; totals are summaries.
+    const max = Math.max(1, Number(model.maxValue || 0));
+    const head = model.series.map((series) => `<th>${esc(series.label)}</th>`).join('');
+    const heatCell = (value, color) => `<td class="heat-cell" style="background:${rgba(color || '#0b6e8c', 0.12 + ((Number(value || 0) / max) * 0.52))};">${esc(formatValue(value))}</td>`;
+    const totalCell = (value) => `<td class="heat-cell dash-total-cell">${esc(formatValue(value))}</td>`;
+    const bodyRows = model.matrixRows.map((row) => {
+      const cells = row.values.map((value, index) => heatCell(value, model.series[index] ? model.series[index].color : '#0b6e8c')).join('');
+      return `<tr><th>${esc(row.label)}</th>${cells}${showTotals ? totalCell(row.total) : ''}</tr>`;
+    });
+    if (showTotals) {
+      const summary = totalsRow(model);
+      bodyRows.push(`<tr class="dash-total-row"><th>${esc(summary.label)}</th>${summary.values.map((value) => totalCell(value)).join('')}${totalCell(summary.total)}</tr>`);
+    }
+    return `<div class="dash-table"><table><thead><tr><th>${esc(model.rowLabel)}</th>${head}${showTotals ? `<th>${esc(STRINGS.total)}</th>` : ''}</tr></thead><tbody>${bodyRows.join('')}</tbody></table></div>`;
+  }
+
+  function renderValueSummary(model) {
+    const widget = model.widget;
+    if (widget.showValues === false || !model.totalRows || model.emptyReason || widget.chartType === 'metric' || widget.chartType === 'progress') return '';
+    const items = model.series.length > 1
+      ? model.series.map((series) => ({ label: series.label, value: series.value, color: series.color }))
+      : model.categoryItems.slice(0, 6).map((item, index) => ({
+          label: item.label,
+          value: item.value,
+          color: model.categoryColors[index] || model.accentColor
+        }));
+    if (!items.length) return '';
+    return `<div class="dash-chip-list dash-value-list">${items.slice(0, 6).map((item) => `<span class="dash-chip" style="--chip:${item.color};">${esc(item.label)}: ${esc(formatValue(item.value))}</span>`).join('')}</div>`;
+  }
+
+  function queueChartWidget(model, prefix, queue) {
+    const canvasId = `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+    queue.push({ id: canvasId, model });
+    return `<div class="dash-canvas-wrap"><canvas id="${canvasId}"></canvas></div>`;
+  }
+
+  function renderWidgetCard(model, prefix, queue) {
+    const widget = model.widget;
+    const spanDesktop = spanToGrid(widget.layoutSpan);
+    const spanTablet = spanToGrid(widget.layoutSpanTablet || widget.layoutSpan);
+    const spanMobile = spanToGrid(widget.layoutSpanMobile || 1);
+    const accentColor = model.accentColor || '#663399';
+    const accentSecondary = model.accentSecondary || tintColor(accentColor, 0.34);
+    const accentSoft = rgba(accentColor, 0.18);
+    const accentSecondarySoft = rgba(accentSecondary, 0.16);
+    const chartType = String(widget.chartType || 'bar').trim().toLowerCase();
+    const metaParts = [model.rowLabel];
+    if (Array.isArray(widget.colColumns) && widget.colColumns.length) metaParts.push(model.colLabel);
+    metaParts.push(widget.aggregation === 'count' ? STRINGS.metricCount : model.valueLabel);
+    let body = '';
+    if (!model.totalRows || model.emptyReason) {
+      body = `<div class="dash-empty">${esc(model.emptyReason || STRINGS.noData)}</div>`;
+    } else if (widget.chartType === 'metric') {
+      body = renderMetricWidget(model);
+    } else if (widget.chartType === 'progress') {
+      body = renderProgressWidget(model);
+    } else if (widget.chartType === 'table') {
+      body = renderTableWidget(model);
+    } else if (widget.chartType === 'heatmap') {
+      body = renderHeatmapWidget(model);
+    } else if (!ChartCtor) {
+      body = `<div class="dash-empty">${esc(STRINGS.missingChart)}</div>`;
+    } else {
+      body = queueChartWidget(model, prefix, queue);
+    }
+    const valueSummary = renderValueSummary(model);
+    return `
+      <article class="dash-widget" data-chart-type="${esc(chartType)}" style="--span-desktop:${spanDesktop};--span-tablet:${spanTablet};--span-mobile:${spanMobile};--min-height:${Number(widget.minHeight || 300)}px;--accent:${accentColor};--accent-soft:${accentSoft};--accent-2:${accentSecondary};--accent-2-soft:${accentSecondarySoft};">
+        <div class="dash-widget-head">
+          <div>
+            <h3>${esc(widget.label || 'Widget')}</h3>
+            <p>${esc(metaParts.join(' | '))}</p>
+          </div>
+          <div class="dash-badges">
+            <span class="dash-badge">${esc(formatValue(model.totalRows))} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea</span>
+            <span class="dash-badge dash-badge-type">${esc(chartTypeLabel(chartType))}</span>
+            ${widget.showToUsers === false ? '<span class="dash-badge">ניהול בלבד</span>' : ''}
+          </div>
+        </div>
+        ${body}
+        ${valueSummary}
+      </article>
+    `;
+  }
+
+  const DATA_LABEL_PLUGIN = {
+    id: 'attendanceDataLabels',
+    afterDatasetsDraw(chart, args, pluginOptions) {
+      if (!pluginOptions || !pluginOptions.display) return;
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.fillStyle = pluginOptions.color || '#33214b';
+      ctx.font = `700 11px ${THEME_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      chart.data.datasets.forEach((dataset, datasetIndex) => {
+        const meta = chart.getDatasetMeta(datasetIndex);
+        if (!meta || meta.hidden) return;
+        meta.data.forEach((element, index) => {
+          const rawValue = Array.isArray(dataset.data) ? dataset.data[index] : null;
+          const numeric = Number(rawValue);
+          if (!Number.isFinite(numeric) || numeric === 0) return;
+          const pos = element && typeof element.tooltipPosition === 'function' ? element.tooltipPosition() : null;
+          if (!pos) return;
+          const type = String(chart.config.type || '').toLowerCase();
+          const y = type === 'pie' || type === 'doughnut' || type === 'polararea' ? pos.y : (pos.y - 10);
+          ctx.fillText(formatValue(rawValue), pos.x, y);
+        });
+      });
+      ctx.restore();
+    }
+  };
+
+  if (ChartCtor && !window.__attendanceLabelsPluginRegistered) {
+    ChartCtor.register(DATA_LABEL_PLUGIN);
+    window.__attendanceLabelsPluginRegistered = true;
+  }
+
+  function buildChartConfig(model) {
+    const widget = model.widget;
+    const colors = model.series.map((series) => series.color);
+    const scaleStep = niceStep(model.maxValue, widget.scaleStep);
+    const borderWidth = Number(widget.borderWidth || 2);
+    const borderRadius = Number(widget.borderRadius || 10);
+    const isRadar = widget.chartType === 'radar';
+    const isRadial = widget.chartType === 'radial';
+    const isCircular = widget.chartType === 'pie' || widget.chartType === 'donut' || widget.chartType === 'polar' || isRadial;
+    const isLineLike = widget.chartType === 'line' || widget.chartType === 'area';
+    const accentColor = model.accentColor || colors[0] || '#663399';
+    const labelDisplay = widget.showLabels !== false
+      && (isCircular
+        ? model.categoryItems.length <= 10
+        : (model.categories.length <= 12 && model.series.length <= 6));
+    const commonOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: widget.animate === false ? false : {
+        duration: Number(widget.animationMs || 700),
+        easing: 'easeOutQuart'
+      },
+      layout: { padding: Number(widget.padding || 12) },
+      interaction: {
+        mode: (isCircular || isRadar) ? 'nearest' : 'index',
+        intersect: isCircular || isRadar
+      },
+      onHover(event, elements, chart) {
+        if (chart && chart.canvas) {
+          chart.canvas.style.cursor = elements && elements.length ? 'pointer' : 'default';
+        }
+      },
+      plugins: {
+        legend: {
+          display: widget.showLegend !== false,
+          position: widget.legendPosition || 'top',
+          labels: {
+            usePointStyle: true,
+            pointStyle: 'circle',
+            boxWidth: 10,
+            boxHeight: 10,
+            padding: 16,
+            color: '#4c4360',
+            font: {
+              family: THEME_FONT,
+              size: 12,
+              weight: '700'
+            }
+          }
+        },
+        tooltip: {
+          enabled: true,
+          backgroundColor: 'rgba(40,29,61,0.94)',
+          titleColor: '#ffffff',
+          bodyColor: '#f4eff9',
+          footerColor: '#d8c9ee',
+          borderColor: rgba(accentColor, 0.34),
+          borderWidth: 1,
+          padding: 12,
+          boxPadding: 4,
+          cornerRadius: 16,
+          displayColors: true,
+          callbacks: {
+            label(context) {
+              const rawValue = isCircular
+                ? Number(context.raw)
+                : (isRadar
+                  ? Number(context.parsed && typeof context.parsed.r === 'number' ? context.parsed.r : context.raw)
+                  : Number(context.parsed && typeof context.parsed.y === 'number' ? context.parsed.y : context.raw));
+              const safeValue = Number.isFinite(rawValue) ? rawValue : 0;
+              const valueLabel = formatValue(safeValue);
+              if (isCircular) {
+                const total = model.categoryItems.reduce((sum, item) => sum + Number(item.value || 0), 0);
+                const share = formatShare(safeValue, total);
+                return `${context.label}: ${valueLabel}${share ? ` (${share})` : ''}`;
+              }
+              const datasetLabel = context.dataset && context.dataset.label ? `${context.dataset.label}: ` : '';
+              const row = model.matrixRows[context.dataIndex];
+              const share = model.series.length > 1 && row ? formatShare(safeValue, row.total) : '';
+              return `${datasetLabel}${valueLabel}${share ? ` (${share})` : ''}`;
+            },
+            afterBody(items) {
+              if (!items || !items.length || isCircular || model.series.length <= 1) return '';
+              const row = model.matrixRows[items[0].dataIndex];
+              return row ? `סה"כ בשורה: ${formatValue(row.total)}` : '';
+            }
+          }
+        },
+        attendanceDataLabels: {
+          display: labelDisplay,
+          color: '#33214b'
+        }
+      }
+    };
+
+    if (isCircular) {
+      return {
+        type: widget.chartType === 'donut' || isRadial ? 'doughnut' : (widget.chartType === 'polar' ? 'polarArea' : 'pie'),
+        data: {
+          labels: model.categoryItems.map((item) => item.label),
+          datasets: [{
+            data: model.categoryItems.map((item) => item.value),
+            backgroundColor: model.categoryColors.map((color) => color),
+            hoverBackgroundColor: model.categoryColors.map((color) => shadeColor(color, 0.08)),
+            borderColor: '#fbf8ff',
+            borderWidth,
+            hoverOffset: 14,
+            spacing: 4
+          }]
+        },
+        options: {
+          ...commonOptions,
+          cutout: widget.chartType === 'donut' ? '58%' : (isRadial ? '72%' : undefined),
+          circumference: isRadial ? 270 : undefined,
+          rotation: isRadial ? -135 : undefined
+        }
+      };
+    }
+
+    if (isRadar) {
+      return {
+        type: 'radar',
+        data: {
+          labels: model.categories,
+          datasets: model.series.map((series, seriesIndex) => ({
+            label: series.label,
+            data: model.matrixRows.map((row) => row.values[seriesIndex] || 0),
+            backgroundColor: rgba(series.color, 0.22),
+            borderColor: series.color,
+            borderWidth,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            pointBackgroundColor: series.color,
+            pointBorderColor: '#ffffff',
+            pointBorderWidth: 2,
+            hoverBorderColor: shadeColor(series.color, 0.12)
+          }))
+        },
+        options: {
+          ...commonOptions,
+          scales: {
+            r: {
+              beginAtZero: true,
+              angleLines: { color: 'rgba(102, 51, 153, 0.14)' },
+              grid: { color: 'rgba(102, 51, 153, 0.12)' },
+              pointLabels: {
+                color: '#5b4d78',
+                font: { size: 12, weight: '700' }
+              },
+              ticks: {
+                backdropColor: 'transparent',
+                color: '#7a6c97',
+                stepSize: scaleStep,
+                z: 1
+              }
+            }
+          }
+        }
+      };
+    }
+
+    const useCategoryColors = model.series.length === 1;
+    const categoryColorAt = (index, fallback) => model.categoryColors[index % model.categoryColors.length] || fallback;
+
+    const datasets = model.series.map((series, seriesIndex) => {
+      const color = series.color;
+      const dataset = {
+        label: series.label,
+        data: model.matrixRows.map((row) => row.values[seriesIndex] || 0),
+        backgroundColor: isLineLike
+          ? (widget.chartType === 'area'
+            ? (context) => gradientFill(context, color, 0.38, 0.03)
+            : rgba(color, 0.14))
+          : (context) => {
+              const dataColor = useCategoryColors ? categoryColorAt(context.dataIndex || 0, color) : color;
+              return gradientFill(context, dataColor, widget.chartType === 'stacked' ? 0.98 : 0.92, 0.56);
+            },
+        hoverBackgroundColor: isLineLike
+          ? rgba(color, 0.2)
+          : (context) => {
+              const dataColor = useCategoryColors ? categoryColorAt(context.dataIndex || 0, color) : color;
+              return shadeColor(dataColor, 0.08);
+            },
+        borderColor: !isLineLike && useCategoryColors
+          ? model.categoryColors.map((itemColor) => shadeColor(itemColor, 0.14))
+          : color,
+        hoverBorderColor: !isLineLike && useCategoryColors
+          ? model.categoryColors.map((itemColor) => shadeColor(itemColor, 0.2))
+          : shadeColor(color, 0.12),
+        borderWidth,
+        hoverBorderWidth: borderWidth + 1,
+        borderRadius: isLineLike ? 0 : borderRadius,
+        borderSkipped: false,
+        fill: widget.chartType === 'area',
+        tension: isLineLike ? 0.42 : 0,
+        pointRadius: isLineLike ? 3.5 : 0,
+        pointHoverRadius: isLineLike ? 6.5 : 0,
+        pointBorderWidth: isLineLike ? 2 : 0,
+        pointBackgroundColor: isLineLike && useCategoryColors ? model.categoryColors : color,
+        pointBorderColor: isLineLike && useCategoryColors
+          ? model.categoryColors.map((itemColor) => shadeColor(itemColor, 0.2))
+          : '#ffffff',
+        pointHitRadius: 18,
+        categoryPercentage: 0.72,
+        barPercentage: 0.84,
+        maxBarThickness: 36
+      };
+      if (widget.chartType === 'stacked') dataset.stack = 'stack-1';
+      return dataset;
+    });
+
+    return {
+      type: widget.chartType === 'line' || widget.chartType === 'area' ? 'line' : 'bar',
+      data: {
+        labels: model.categories,
+        datasets
+      },
+      options: {
+        ...commonOptions,
+        elements: {
+          line: {
+            tension: isLineLike ? 0.42 : 0
+          },
+          point: {
+            hoverBorderWidth: 2
+          }
+        },
+        scales: {
+          x: {
+            stacked: widget.chartType === 'stacked',
+            grid: { display: false, drawBorder: false },
+            ticks: {
+              color: '#6f6783',
+              font: { weight: '700' }
+            }
+          },
+          y: {
+            beginAtZero: true,
+            stacked: widget.chartType === 'stacked',
+            border: { display: false },
+            grid: { display: widget.showGrid !== false, color: 'rgba(102, 51, 153, 0.08)', drawBorder: false },
+            ticks: {
+              stepSize: scaleStep,
+              color: '#6f6783',
+              font: { weight: '700' },
+              padding: 8
+            }
+          }
+        }
+      }
+    };
+  }
+
+  function mountQueuedCharts(queue, store) {
+    if (!ChartCtor) return;
+    queue.forEach((entry) => {
+      const canvas = byId(entry.id);
+      if (!(canvas instanceof HTMLCanvasElement)) return;
+      const config = buildChartConfig(entry.model);
+      if (entry.id.indexOf('preview-chart') === 0 && config && config.options) {
+        config.options.animation = false;
+        config.options.events = [];
+        config.options.interaction = { mode: 'nearest', intersect: true };
+        config.options.onHover = null;
+        if (config.options.plugins && config.options.plugins.tooltip) {
+          config.options.plugins.tooltip.enabled = false;
+        }
+      }
+      const chart = new ChartCtor(canvas.getContext('2d'), config);
+      store.push(chart);
+    });
+  }
+
+  function buildAdminWidgetsFromDom() {
+    return Array.from(document.querySelectorAll('.preset-card')).map((card, index) => {
+      const rowsSelect = card.querySelector('.preset-rows');
+      const colsSelect = card.querySelector('.preset-cols');
+      const rowPrimary = card.querySelector('.preset-row-primary');
+      const colPrimary = card.querySelector('.preset-col-primary');
+      const rowColumns = selectedValues(rowsSelect);
+      const colColumns = selectedValues(colsSelect);
+      const safeRowPrimary = rowPrimary instanceof HTMLSelectElement ? String(rowPrimary.value || '').trim() : '';
+      const safeColPrimary = colPrimary instanceof HTMLSelectElement ? String(colPrimary.value || '').trim() : '';
+      return {
+        id: `preset-${index + 1}`,
+        label: String(card.querySelector('.preset-label') && card.querySelector('.preset-label').value || '').trim(),
+        rowColumns: rowColumns.length ? rowColumns : (safeRowPrimary ? [safeRowPrimary] : []),
+        colColumns: colColumns.length ? colColumns : (safeColPrimary ? [safeColPrimary] : []),
+        chartType: String(card.querySelector('.preset-chart-type') && card.querySelector('.preset-chart-type').value || 'bar').trim(),
+        dataScope: String(card.querySelector('.preset-scope') && card.querySelector('.preset-scope').value || 'scoped').trim(),
+        aggregation: String(card.querySelector('.preset-aggregation') && card.querySelector('.preset-aggregation').value || 'count').trim(),
+        valueColumn: String(card.querySelector('.preset-value-column') && card.querySelector('.preset-value-column').value || '').trim(),
+        palette: String(card.querySelector('.preset-palette') && card.querySelector('.preset-palette').value || 'aurora').trim(),
+        customColors: String(card.querySelector('.preset-custom-colors') && card.querySelector('.preset-custom-colors').value || '').split(/[\n,]+/).map((item) => String(item || '').trim()).filter(Boolean),
+        layoutSpan: Number(card.querySelector('.preset-span') && card.querySelector('.preset-span').value || 1) >= 2 ? 2 : 1,
+        layoutSpanTablet: Number(card.querySelector('.preset-span-tablet') && card.querySelector('.preset-span-tablet').value || 1) >= 2 ? 2 : 1,
+        layoutSpanMobile: Number(card.querySelector('.preset-span-mobile') && card.querySelector('.preset-span-mobile').value || 1) >= 2 ? 2 : 1,
+        maxItems: Math.min(DASHBOARD_MAX_ITEMS_LIMIT, Math.max(3, Number(card.querySelector('.preset-max-items') && card.querySelector('.preset-max-items').value || 8) || 8)),
+        showToUsers: !!(card.querySelector('.preset-show-to-users') && card.querySelector('.preset-show-to-users').checked),
+        showTotals: !!(card.querySelector('.preset-show-totals') && card.querySelector('.preset-show-totals').checked),
+        showLegend: !!(card.querySelector('.preset-show-legend') && card.querySelector('.preset-show-legend').checked),
+        showValues: !!(card.querySelector('.preset-show-values') && card.querySelector('.preset-show-values').checked),
+        showLabels: !!(card.querySelector('.preset-show-labels') && card.querySelector('.preset-show-labels').checked),
+        showGrid: !!(card.querySelector('.preset-show-grid') && card.querySelector('.preset-show-grid').checked),
+        animate: !!(card.querySelector('.preset-animate') && card.querySelector('.preset-animate').checked),
+        legendPosition: String(card.querySelector('.preset-legend-position') && card.querySelector('.preset-legend-position').value || 'top').trim(),
+        borderWidth: Number(card.querySelector('.preset-border-width') && card.querySelector('.preset-border-width').value || 2),
+        borderRadius: Number(card.querySelector('.preset-border-radius') && card.querySelector('.preset-border-radius').value || 10),
+        padding: Number(card.querySelector('.preset-padding') && card.querySelector('.preset-padding').value || 12),
+        minHeight: Number(card.querySelector('.preset-min-height') && card.querySelector('.preset-min-height').value || 300),
+        animationMs: Number(card.querySelector('.preset-animation-ms') && card.querySelector('.preset-animation-ms').value || 700),
+        scaleStep: Number(card.querySelector('.preset-scale-step') && card.querySelector('.preset-scale-step').value || 0)
+      };
+    }).filter((widget) => widget.label && widget.rowColumns.length);
+  }
+
+  async function loadAdminDataset(force) {
+    const settingsResult = await App.loadManagementSettings();
+    const workbookInput = byId('workbookUrl');
+    const workbookUrl = String(workbookInput && workbookInput.value || App.resolveWorkbookUrl(settingsResult.settings)).trim();
+    if (!workbookUrl) throw new Error('\u05d9\u05e9 \u05dc\u05d4\u05d2\u05d3\u05d9\u05e8 \u05e7\u05d9\u05e9\u05d5\u05e8 Excel \u05d9\u05e9\u05d9\u05e8.');
+    if (!force && adminCache.workbookUrl === workbookUrl && adminCache.headers.length) {
+      return { settings: settingsResult.settings, headers: adminCache.headers, rows: adminCache.rows };
+    }
+    const config = App.getStaticConfig();
+    const workbookInfo = await App.loadWorkbookFromSharePoint(workbookUrl);
+    const matrix = App.getSheetMatrix(workbookInfo.workbook, config.workbook.mainSheet, config.workbook.columnCount);
+    adminCache.workbookUrl = workbookUrl;
+    adminCache.headers = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+    adminCache.rows = buildRowsFromMatrix(matrix, config.workbook.columnCount);
+    return { settings: settingsResult.settings, headers: adminCache.headers, rows: adminCache.rows };
+  }
+
+  function isGraphsTabVisible() {
+    const section = byId('dashboardPreviewSection');
+    return !!(section && !section.classList.contains('hidden') && section.offsetParent !== null);
+  }
+
+  function isAdminDashboardTabVisible() {
+    const section = byId('adminDashboardSection');
+    return !!(section && !section.classList.contains('hidden') && section.offsetParent !== null);
+  }
+
+  async function loadAttendanceDataset(force) {
+    const settingsResult = await App.loadManagementSettings();
+    const selection = App.loadSelection();
+    const groups = attendanceSelectionGroups(selection);
+    const key = JSON.stringify({
+      workbookUrl: App.resolveWorkbookUrl(settingsResult.settings),
+      dateKey: selection.dateKey || App.todayKey(),
+      groups,
+      adminMode: !!selection.adminMode
+    });
+    if (!force && attendanceCache.key === key && attendanceCache.headers.length) {
+      return {
+        settings: attendanceCache.settings,
+        headers: attendanceCache.headers,
+        allRows: attendanceCache.allRows,
+        scopedRows: attendanceCache.scopedRows
+      };
+    }
+    const session = await App.prepareWorkbookForAttendance(settingsResult.settings, selection.dateKey || App.todayKey());
+    const config = App.getStaticConfig();
+    const matrix = App.getSheetMatrix(session.activeInfo.workbook, config.workbook.mainSheet, config.workbook.columnCount);
+    const headers = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+    const allRows = buildRowsFromMatrix(matrix, config.workbook.columnCount);
+    const scopedRows = filterAttendanceRowsForSelection(allRows, selection);
+    attendanceCache.key = key;
+    attendanceCache.settings = settingsResult.settings;
+    attendanceCache.headers = headers;
+    attendanceCache.allRows = allRows;
+    attendanceCache.scopedRows = scopedRows;
+    return { settings: settingsResult.settings, headers, allRows, scopedRows };
+  }
+
+  async function loadAttendanceAggregateDataset(force, baseDataset) {
+    const selection = App.loadSelection();
+    const settingsResult = baseDataset && baseDataset.settings
+      ? { settings: baseDataset.settings }
+      : await App.loadManagementSettings();
+    const dateKeys = Array.from(new Set([
+      selection.dateKey || App.todayKey(),
+      ...App.normalizeOpenDates(settingsResult.settings.openDates)
+    ])).sort((left, right) => left.localeCompare(right));
+    const key = JSON.stringify({
+      workbookUrl: App.resolveWorkbookUrl(settingsResult.settings),
+      dateKeys,
+      groups: attendanceSelectionGroups(selection),
+      adminMode: !!selection.adminMode
+    });
+    if (!force && attendanceCache.aggregateKey === key && attendanceCache.aggregateHeaders.length) {
+      return {
+        settings: settingsResult.settings,
+        headers: attendanceCache.aggregateHeaders,
+        allRows: attendanceCache.aggregateAllRows,
+        scopedRows: attendanceCache.aggregateScopedRows,
+        dateKeys: attendanceCache.aggregateDateKeys
+      };
+    }
+    const config = App.getStaticConfig();
+    const selectedDateKey = selection.dateKey || App.todayKey();
+    const allRows = [];
+    const scopedRows = [];
+    let headers = Array.isArray(baseDataset && baseDataset.headers) ? baseDataset.headers.slice() : [];
+    for (let index = 0; index < dateKeys.length; index += 1) {
+      const dateKey = dateKeys[index];
+      if (baseDataset && dateKey === selectedDateKey) {
+        allRows.push(...baseDataset.allRows);
+        scopedRows.push(...filterAttendanceRowsForSelection(baseDataset.allRows, selection));
+        if (!headers.length) headers = baseDataset.headers.slice();
+        continue;
+      }
+      const session = await App.prepareWorkbookForAttendance(settingsResult.settings, dateKey);
+      const matrix = App.getSheetMatrix(session.activeInfo.workbook, config.workbook.mainSheet, config.workbook.columnCount);
+      const dateHeaders = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+      const dateRows = buildRowsFromMatrix(matrix, config.workbook.columnCount);
+      if (!headers.length) headers = dateHeaders;
+      allRows.push(...dateRows);
+      scopedRows.push(...filterAttendanceRowsForSelection(dateRows, selection));
+    }
+    attendanceCache.aggregateKey = key;
+    attendanceCache.aggregateHeaders = headers;
+    attendanceCache.aggregateAllRows = allRows;
+    attendanceCache.aggregateScopedRows = scopedRows;
+    attendanceCache.aggregateDateKeys = dateKeys;
+    return {
+      settings: settingsResult.settings,
+      headers,
+      allRows,
+      scopedRows,
+      dateKeys
+    };
+  }
+
+  function readVisibleAttendanceRows(headerCount) {
+    const table = document.querySelector('.attendance-table tbody');
+    if (!table) return [];
+    return Array.from(table.querySelectorAll('tr')).map((tr) => {
+      const cells = Array.from(tr.querySelectorAll('td'))
+        .filter((td) => !td.classList.contains('action-col'))
+        .map((td) => {
+          const field = td.querySelector('input, select');
+          if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement) return String(field.value || '').trim();
+          return String(td.textContent || '').trim();
+        })
+        .slice(0, headerCount);
+      return { cells };
+    }).filter((row) => row.cells.length === headerCount);
+  }
+
+  function buildAttendanceScopeContext(scope, baseDataset, aggregateDataset, visibleRows) {
+    const selection = App.loadSelection();
+    const activeScope = normalizeAttendanceDashboardScope(scope);
+    const selectedDateKey = selection.dateKey || App.todayKey();
+    const selectedDateLabel = App.formatDateLabel(selectedDateKey);
+    const visibleSet = visibleRows.length ? visibleRows : baseDataset.scopedRows;
+    switch (activeScope) {
+      case 'current-view':
+        return {
+          dataset: {
+            allRows: visibleSet,
+            scopedRows: visibleSet,
+            visibleRows: visibleSet
+          },
+          summaryRows: visibleSet,
+          label: `מוצגות ${App.formatNumber(visibleSet.length)} רשומות אחרי הסינון והחיפוש שעל המסך.`,
+          metaText: 'כולל רק את מה שמופיע כרגע בטבלה.'
+        };
+      case 'selected-group':
+        return {
+          dataset: {
+            allRows: baseDataset.scopedRows,
+            scopedRows: baseDataset.scopedRows,
+            visibleRows: baseDataset.scopedRows
+          },
+          summaryRows: baseDataset.scopedRows,
+          label: `מוצגות ${App.formatNumber(baseDataset.scopedRows.length)} רשומות עבור ${selectedDateLabel}.`,
+          metaText: 'מסכם את הרשומות הזמינות לקבוצה או לבחירה הפעילה.'
+        };
+      case 'selected-day': {
+        const dayRows = selection.adminMode ? baseDataset.allRows : baseDataset.scopedRows;
+        return {
+          dataset: {
+            allRows: dayRows,
+            scopedRows: dayRows,
+            visibleRows: dayRows
+          },
+          summaryRows: dayRows,
+          label: `מוצגות ${App.formatNumber(dayRows.length)} רשומות עבור ${selectedDateLabel}.`,
+          metaText: selection.adminMode
+            ? 'מרחיב את הדשבורד לכל הרשומות של היום הנבחר.'
+            : 'מרחיב את הדשבורד לכל הרשומות הזמינות לכם ביום הנבחר.'
+        };
+      }
+      case 'all-open-dates': {
+        const openRows = selection.adminMode
+          ? aggregateDataset.allRows
+          : aggregateDataset.scopedRows;
+        const totalDates = Array.isArray(aggregateDataset.dateKeys) ? aggregateDataset.dateKeys.length : 0;
+        return {
+          dataset: {
+            allRows: openRows,
+            scopedRows: openRows,
+            visibleRows: openRows
+          },
+          summaryRows: openRows,
+          label: `מוצגות ${App.formatNumber(openRows.length)} רשומות על פני ${App.formatNumber(totalDates)} תאריכים פתוחים.`,
+          metaText: 'מאחד את כל התאריכים הפתוחים לתמונה תקופתית אחת.'
+        };
+      }
+      default:
+        return {
+          dataset: {
+            allRows: baseDataset.allRows,
+            scopedRows: baseDataset.scopedRows,
+            visibleRows: visibleSet
+          },
+          summaryRows: visibleSet,
+          label: `מוצגות ${App.formatNumber(visibleSet.length)} רשומות בתצוגה הנוכחית.`,
+          metaText: 'כל כרטיס משתמש בטווח הנתונים שהוגדר לו.'
+        };
+    }
+  }
+
+  function renderAdminPreview(forceReload) {
+    const summary = byId('dashboardPreviewSummary');
+    const grid = byId('dashboardPreviewGrid');
+    if (!summary || !grid) return;
+    if (!isGraphsTabVisible()) {
+      adminCache.previewPending = true;
+      adminCache.previewPendingForce = adminCache.previewPendingForce || !!forceReload;
+      return;
+    }
+    const renderId = ++adminCache.previewRenderId;
+    if (!adminCache.previewReady) {
+      grid.innerHTML = `<div class="dash-empty">\u05d8\u05d5\u05e2\u05df \u05ea\u05e6\u05d5\u05d2\u05d4 \u05de\u05e7\u05d3\u05d9\u05de\u05d4...</div>`;
+    } else {
+      grid.classList.add('is-refreshing');
+    }
+    loadAdminDataset(forceReload).then((dataset) => {
+      if (renderId !== adminCache.previewRenderId) return;
+      const widgets = buildAdminWidgetsFromDom();
+      destroyCharts(previewCharts);
+      summary.innerHTML = `<div class="dash-summary">${renderSummaryCards(dataset.rows, dataset.settings, widgets.length)}</div>`;
+      if (!widgets.length) {
+        grid.innerHTML = renderDashboardEmptyState(STRINGS.noWidgets, 'הוסיפו גרפים באזור הדשבורד כדי לראות כאן תצוגה מקדימה חיה.');
+        grid.classList.remove('is-refreshing');
+        adminCache.previewReady = false;
+        adminCache.previewPending = false;
+        adminCache.previewPendingForce = false;
+        return;
+      }
+      const queue = [];
+      const html = widgets.map((widget) => renderWidgetCard(buildWidgetModel(widgetScopeRows({ allRows: dataset.rows, scopedRows: dataset.rows, visibleRows: dataset.rows }, widget), dataset.headers, widget, dataset.settings), 'preview-chart', queue)).join('');
+      grid.innerHTML = `<div class="dash-grid">${html}</div>`;
+      mountQueuedCharts(queue, previewCharts);
+      grid.classList.remove('is-refreshing');
+      adminCache.previewReady = true;
+      adminCache.previewPending = false;
+      adminCache.previewPendingForce = false;
+    }).catch((error) => {
+      if (renderId !== adminCache.previewRenderId) return;
+      destroyCharts(previewCharts);
+      summary.innerHTML = '';
+      grid.innerHTML = renderDashboardEmptyState(
+        'לא הצלחנו לטעון את התצוגה המקדימה',
+        describeDashboardLoadError(error, 'בדקו את קישור ה-Excel, ההרשאות והחיבור ל-SharePoint.')
+      );
+      grid.classList.remove('is-refreshing');
+      adminCache.previewReady = false;
+      adminCache.previewPending = false;
+      adminCache.previewPendingForce = false;
+    });
+  }
+
+  function renderAdminDashboard(forceReload) {
+    const summary = byId('adminDashboardSummary');
+    const grid = byId('adminDashboardGrid');
+    if (!summary || !grid) return;
+    if (!isAdminDashboardTabVisible()) {
+      adminCache.dashboardPending = true;
+      adminCache.dashboardPendingForce = adminCache.dashboardPendingForce || !!forceReload;
+      return;
+    }
+    const renderId = ++adminCache.dashboardRenderId;
+    if (!adminCache.dashboardReady) {
+      grid.innerHTML = `<div class="dash-empty">\u05d8\u05d5\u05e2\u05df \u05d0\u05ea \u05d4\u05d3\u05e9\u05d1\u05d5\u05e8\u05d3 \u05d4\u05de\u05dc\u05d0...</div>`;
+    } else {
+      grid.classList.add('is-refreshing');
+    }
+    loadAdminDataset(forceReload).then((dataset) => {
+      if (renderId !== adminCache.dashboardRenderId) return;
+      const widgets = buildAdminWidgetsFromDom();
+      destroyCharts(adminDashboardCharts);
+      summary.innerHTML = `<div class="dash-summary">${renderSummaryCards(dataset.rows, dataset.settings, widgets.length)}</div>`;
+      if (!widgets.length) {
+        grid.innerHTML = renderDashboardEmptyState(STRINGS.noWidgets, 'צרו ווידג׳טים בטאב הדשבורד כדי לקבל כאן תמונת מצב חיה למנהל.');
+        grid.classList.remove('is-refreshing');
+        adminCache.dashboardReady = false;
+        adminCache.dashboardPending = false;
+        adminCache.dashboardPendingForce = false;
+        return;
+      }
+      const queue = [];
+      const html = widgets.map((widget) => renderWidgetCard(buildWidgetModel(widgetScopeRows({ allRows: dataset.rows, scopedRows: dataset.rows, visibleRows: dataset.rows }, widget), dataset.headers, widget, dataset.settings), 'admin-dashboard-chart', queue)).join('');
+      grid.innerHTML = `<div class="dash-grid">${html}</div>`;
+      mountQueuedCharts(queue, adminDashboardCharts);
+      grid.classList.remove('is-refreshing');
+      adminCache.dashboardReady = true;
+      adminCache.dashboardPending = false;
+      adminCache.dashboardPendingForce = false;
+    }).catch((error) => {
+      if (renderId !== adminCache.dashboardRenderId) return;
+      destroyCharts(adminDashboardCharts);
+      summary.innerHTML = '';
+      grid.innerHTML = renderDashboardEmptyState(
+        'לא הצלחנו לטעון את הדשבורד',
+        describeDashboardLoadError(error, 'בדקו את מקורות הנתונים וההרשאות ונסו לרענן שוב.')
+      );
+      grid.classList.remove('is-refreshing');
+      adminCache.dashboardReady = false;
+      adminCache.dashboardPending = false;
+      adminCache.dashboardPendingForce = false;
+    });
+  }
+
+  function renderUnitsStatusView(forceReload) {
+    const board = byId('unitsStatusBoard');
+    const meta = byId('unitsStatusMeta');
+    if (!board || !meta) return;
+    board.innerHTML = renderDashboardEmptyState(
+      'טוען טבלת יחידות',
+      'אנחנו מרכזים עכשיו את הרשומות מתוך הקובץ הראשי.'
+    );
+    loadAdminDataset(forceReload).then((dataset) => {
+      const query = String(byId('unitsSearch') && byId('unitsSearch').value || '').trim();
+      const editableColumns = selectedValues(byId('editableColumns')).length ? selectedValues(byId('editableColumns')) : dataset.settings.editableColumns;
+      const filtered = dataset.rows.filter((row) => App.matchesSearchTokens(cellsOf(row).join(' '), query));
+      meta.textContent = `${App.formatNumber(filtered.length)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea`;
+      if (!filtered.length) {
+        board.innerHTML = renderDashboardEmptyState(
+          'לא נמצאו רשומות',
+          'נסו חיפוש אחר, או הרחיבו את תנאי הסינון כדי לראות יותר תוצאות.'
+        );
+        return;
+      }
+      const head = dataset.headers.map((header) => `<th>${esc(header)}</th>`).join('');
+      const body = filtered.map((row, rowIndex) => {
+        const cells = dataset.headers.map((header, colIndex) => {
+          const letter = App.indexToColumnLetter(colIndex);
+          const text = String(cellsOf(row)[colIndex] || '').trim();
+          if (editableColumns.includes(letter) && text) {
+            return `<td><span class="status-pill">${esc(text)}</span></td>`;
+          }
+          return `<td>${esc(text || (colIndex === 0 ? String(rowIndex + 1) : '-'))}</td>`;
+        }).join('');
+        return `<tr>${cells}</tr>`;
+      }).join('');
+      board.innerHTML = `<div class="table-grid-shell"><table class="admin-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    }).catch((error) => {
+      meta.textContent = '';
+      board.innerHTML = renderDashboardEmptyState(
+        'לא הצלחנו לטעון את טבלת היחידות',
+        describeDashboardLoadError(error, 'בדקו את קישור ה-Excel, ההרשאות והחיבור ל-SharePoint.')
+      );
+    });
+  }
+
+  async function renderAttendanceDashboard() {
+    const scopeLabel = byId('dashboardScopeLabel');
+    const summary = byId('dashboardSummary');
+    const grid = byId('dashboardGrid');
+    if (!scopeLabel || !summary || !grid) return;
+    const renderId = ++attendanceCache.renderId;
+    const activeScope = currentAttendanceDashboardScope();
+    attendanceCache.rendering = true;
+    destroyCharts(attendanceCharts);
+    grid.innerHTML = `<div class="dash-empty">\u05d8\u05d5\u05e2\u05df \u05d0\u05ea \u05d4\u05d3\u05e9\u05d1\u05d5\u05e8\u05d3...</div>`;
+    renderAttendanceScopeControls(activeScope, activeScope === 'all-open-dates'
+      ? 'מאחד כרגע את כל התאריכים הפתוחים...'
+      : 'טוען את היקף הנתונים שנבחר...');
+    try {
+      const dataset = await loadAttendanceDataset(false);
+      if (renderId !== attendanceCache.renderId) return;
+      const aggregateDataset = activeScope === 'all-open-dates'
+        ? await loadAttendanceAggregateDataset(false, dataset)
+        : null;
+      if (renderId !== attendanceCache.renderId) return;
+      const visibleRows = readVisibleAttendanceRows((aggregateDataset || dataset).headers.length);
+      const widgets = (Array.isArray(dataset.settings.crossTabs) ? dataset.settings.crossTabs : []).filter((widget) => widget && widget.showToUsers !== false);
+      const scopeContext = buildAttendanceScopeContext(activeScope, dataset, aggregateDataset, visibleRows);
+      renderAttendanceScopeControls(activeScope, scopeContext.metaText);
+      scopeLabel.textContent = scopeContext.label;
+      summary.innerHTML = `<div class="dash-summary">${renderSummaryCards(scopeContext.summaryRows, dataset.settings, widgets.length)}</div>`;
+      if (!widgets.length) {
+        grid.innerHTML = `<div class="dash-empty">${esc(STRINGS.noWidgets)}</div>`;
+        return;
+      }
+      const queue = [];
+      const datasetHeaders = Array.isArray(aggregateDataset && aggregateDataset.headers) && aggregateDataset.headers.length
+        ? aggregateDataset.headers
+        : dataset.headers;
+      const html = widgets.map((widget) => renderWidgetCard(buildWidgetModel(widgetScopeRows(scopeContext.dataset, widget), datasetHeaders, widget, dataset.settings), 'attendance-chart', queue)).join('');
+      grid.innerHTML = `<div class="dash-grid">${html}</div>`;
+      mountQueuedCharts(queue, attendanceCharts);
+    } catch (error) {
+      if (renderId !== attendanceCache.renderId) return;
+      summary.innerHTML = '';
+      grid.innerHTML = `<div class="dash-empty">${esc(error && error.message ? error.message : error)}</div>`;
+    } finally {
+      if (renderId === attendanceCache.renderId) {
+        attendanceCache.rendering = false;
+      }
+    }
+  }
+
+  function scheduleAdminPreview(forceReload) {
+    if (!isGraphsTabVisible()) {
+      adminCache.previewPending = true;
+      adminCache.previewPendingForce = adminCache.previewPendingForce || !!forceReload;
+      return;
+    }
+    if (adminCache.previewTimer) window.clearTimeout(adminCache.previewTimer);
+    adminCache.previewTimer = window.setTimeout(() => {
+      adminCache.previewTimer = 0;
+      renderAdminPreview(!!forceReload || !!adminCache.previewPendingForce);
+    }, forceReload ? 140 : 240);
+  }
+
+  function scheduleAdminDashboard(forceReload) {
+    if (!isAdminDashboardTabVisible()) {
+      adminCache.dashboardPending = true;
+      adminCache.dashboardPendingForce = adminCache.dashboardPendingForce || !!forceReload;
+      return;
+    }
+    if (adminCache.dashboardTimer) window.clearTimeout(adminCache.dashboardTimer);
+    adminCache.dashboardTimer = window.setTimeout(() => {
+      adminCache.dashboardTimer = 0;
+      renderAdminDashboard(!!forceReload || !!adminCache.dashboardPendingForce);
+    }, forceReload ? 140 : 240);
+  }
+
+  function scheduleUnitsView(forceReload) {
+    if (adminCache.unitsTimer) window.clearTimeout(adminCache.unitsTimer);
+    adminCache.unitsTimer = window.setTimeout(() => {
+      adminCache.unitsTimer = 0;
+      renderUnitsStatusView(!!forceReload);
+    }, 120);
+  }
+
+  function injectStyles() {
+    if (byId('attendance-dashboard-style')) return;
+    const style = document.createElement('style');
+    style.id = 'attendance-dashboard-style';
+    style.textContent = `
+      .dash-launch{min-width:144px}
+      #dashboardDialog{width:min(1380px,calc(100vw - 24px));max-width:1380px;border:0;border-radius:16px;padding:0;background:#fff;box-shadow:0 18px 44px rgba(15,23,42,.18)}
+      #dashboardDialog::backdrop{background:rgba(15,23,42,.38)}
+      .dash-frame{padding:22px;background:#fff}
+      .dash-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;margin-bottom:18px}
+      .dash-head h2{margin:0;font-size:28px;color:var(--text-primary)}
+      .dash-head p{margin:4px 0 0;color:var(--muted);font-size:13px;font-weight:700}
+      .dash-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:var(--surface-subtle)}
+      .dash-scope-toggle{display:flex;flex-wrap:wrap;gap:8px}
+      .dash-scope-btn{min-height:36px;padding:0 12px;border-radius:8px;border:1px solid var(--border);background:#fff;color:var(--text-primary);font-size:12px;font-weight:800;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,color .18s ease}
+      .dash-scope-btn:hover{border-color:rgba(102,51,153,.22)}
+      .dash-scope-btn.is-active{background:rgba(102,51,153,.08);border-color:rgba(102,51,153,.24);color:var(--primary-dark)}
+      .dash-toolbar-meta{color:var(--muted);font-size:12px;font-weight:700;line-height:1.5}
+      .dash-summary{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:18px}
+      .dash-summary-card{padding:16px;border-radius:12px;border:1px solid var(--border);background:#fff;box-shadow:none}
+      .dash-summary-card::before{content:none}
+      .dash-summary-card strong{display:block;font-size:28px;line-height:1;margin-bottom:6px;color:var(--text-primary)}
+      .dash-summary-card span{display:block;color:var(--muted);font-size:12px;font-weight:700}
+      .dash-grid{display:grid;gap:14px;grid-template-columns:repeat(12,minmax(0,1fr))}
+      .dash-widget{grid-column:span var(--span-desktop,6);padding:18px;border-radius:12px;border:1px solid var(--border);border-inline-start:4px solid var(--accent,var(--primary));background:#fff;box-shadow:none;min-height:var(--min-height,300px);display:grid;gap:16px;transition:border-color .18s ease,background-color .18s ease}
+      .dash-widget::before,.dash-widget::after{content:none}
+      .dash-widget:hover{transform:none;border-color:rgba(102,51,153,.26);box-shadow:none}
+      .dash-widget-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px}
+      .dash-widget-head h3{margin:0;font-size:18px;color:var(--text-primary)}
+      .dash-widget-head p{margin:5px 0 0;color:var(--muted);font-size:12px;font-weight:700;line-height:1.5}
+      .dash-badges{display:flex;flex-wrap:wrap;gap:8px}
+      .dash-badge{display:inline-flex;align-items:center;padding:6px 10px;border-radius:6px;background:var(--surface-subtle);color:var(--text-primary);font-size:11px;font-weight:700;border:1px solid var(--border);box-shadow:none}
+      .dash-badge-type{background:rgba(102,51,153,.08);color:var(--primary-dark);border-color:rgba(102,51,153,.14)}
+      .dash-badge-muted{background:var(--surface-subtle);color:var(--muted)}
+      .dash-canvas-wrap{position:relative;min-height:calc(var(--min-height,300px) - 100px);padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface-subtle);box-shadow:none}
+      .dash-canvas-wrap::before{content:none}
+      .dash-canvas-wrap canvas{position:relative;z-index:1}
+      #dashboardPreviewGrid.is-refreshing,#adminDashboardGrid.is-refreshing{opacity:.7;transition:opacity .18s ease}
+      .dash-empty{padding:24px;border-radius:10px;border:1px dashed var(--border);background:var(--surface-subtle);color:var(--muted);font-size:14px;font-weight:700;text-align:center}
+      .dash-table{overflow:auto;border:1px solid var(--border);border-radius:10px;background:#fff}
+      .dash-table table{width:100%;min-width:520px;border-collapse:collapse}
+      .dash-table thead th{position:sticky;top:0;background:#fff;z-index:1;padding:11px 12px;border-bottom:1px solid var(--border);text-align:right;font-size:12px;color:var(--text-primary)}
+      .dash-table tbody td,.dash-table tbody th{padding:10px 12px;border-bottom:1px solid var(--surface-line-soft);text-align:right;font-size:12px}
+      .dash-table tbody tr:nth-child(even) td,.dash-table tbody tr:nth-child(even) th{background:inherit}
+      .dash-table tbody tr:hover td,.dash-table tbody tr:hover th{background:var(--surface-subtle)}
+      .dash-total-row th,.dash-total-row td,.dash-total-cell{background:var(--surface-subtle);font-weight:900;color:var(--text-primary)}
+      .heat-cell{text-align:center;font-weight:900;color:var(--text-primary)}
+      .dash-metric{display:grid;gap:12px}
+      .dash-metric strong{font-size:48px;line-height:1;color:var(--text-primary)}
+      .dash-metric span{color:var(--muted);font-size:12px;font-weight:700}
+      .dash-chip-list{display:flex;flex-wrap:wrap;gap:8px}
+      .dash-value-list{padding-top:2px}
+      .dash-chip{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;background:var(--surface-subtle);border:1px solid var(--border);color:var(--text);font-size:12px;font-weight:700;box-shadow:none}
+      .dash-chip::before{content:'';width:8px;height:8px;border-radius:999px;background:var(--chip,var(--primary));flex:0 0 auto}
+      .dash-progress-list{display:grid;gap:10px}
+      .dash-progress-row{display:grid;gap:9px;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:#fff;box-shadow:none}
+      .dash-progress-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
+      .dash-progress-head strong{font-size:13px;color:var(--text-primary)}
+      .dash-progress-head span{font-size:12px;font-weight:700;color:var(--muted)}
+      .dash-progress-track{position:relative;height:10px;border-radius:6px;background:rgba(102,51,153,.08);overflow:hidden}
+      .dash-progress-fill{display:block;height:100%;border-radius:6px;background:var(--bar,var(--primary));box-shadow:none}
+      @media (max-width:980px){.dash-widget{grid-column:span var(--span-tablet,12)}}
+      @media (max-width:640px){.dash-frame{padding:16px}.dash-toolbar{padding:12px}.dash-summary{grid-template-columns:1fr}.dash-widget{grid-column:span var(--span-mobile,12);padding:16px}.dash-metric strong{font-size:40px}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function renderAttendanceScopeButtonsMarkup() {
+    const activeScope = currentAttendanceDashboardScope();
+    return ATTENDANCE_SCOPE_OPTIONS.map((option) => {
+      const active = option.value === activeScope;
+      return `<button type="button" class="dash-scope-btn${active ? ' is-active' : ''}" data-dashboard-scope="${esc(option.value)}" aria-pressed="${active ? 'true' : 'false'}">${esc(option.label)}</button>`;
+    }).join('');
+  }
+
+  function ensureAttendanceUi() {
+    injectStyles();
+    const actions = byId('attendanceNavbarActions') || document.querySelector('.actions');
+    if (!actions || byId('dashboardBtn')) return;
+    const button = document.createElement('button');
+    button.id = 'dashboardBtn';
+    button.type = 'button';
+    button.className = 'btn light dash-launch attendance-toolbar-btn';
+    button.innerHTML = '<i class="fas fa-chart-bar" aria-hidden="true"></i><span>דשבורד</span>';
+    const saveButton = byId('saveBtn');
+    const target = actions.querySelector('.attendance-action-cluster-main') || actions;
+    if (saveButton && saveButton.parentElement === target) target.insertBefore(button, saveButton);
+    else target.appendChild(button);
+
+    const dialog = document.createElement('dialog');
+    dialog.id = 'dashboardDialog';
+    dialog.innerHTML = `<div class="dash-frame"><div class="dash-head"><div><h2>\u05d3\u05e9\u05d1\u05d5\u05e8\u05d3 \u05e0\u05d5\u05db\u05d7\u05d5\u05ea</h2><p id="dashboardScopeLabel"></p></div><button id="dashboardCloseBtn" type="button" class="btn light">\u05e1\u05d2\u05d5\u05e8</button></div><div class="dash-toolbar"><div id="dashboardScopeToggle" class="dash-scope-toggle" aria-label="\u05d8\u05d5\u05d5\u05d7 \u05d3\u05e9\u05d1\u05d5\u05e8\u05d3">${renderAttendanceScopeButtonsMarkup()}</div><div id="dashboardScopeMeta" class="dash-toolbar-meta"></div></div><div id="dashboardSummary"></div><div id="dashboardGrid"></div></div>`;
+    document.body.appendChild(dialog);
+
+    button.addEventListener('click', () => {
+      if (attendanceCache.opening || dialog.open) return;
+      attendanceCache.opening = true;
+      button.disabled = true;
+      renderAttendanceDashboard().then(() => {
+        if (!dialog.open) dialog.showModal();
+      }).finally(() => {
+        attendanceCache.opening = false;
+        button.disabled = false;
+      });
+    });
+    dialog.querySelector('#dashboardScopeToggle').addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const scopeButton = target.closest('button[data-dashboard-scope]');
+      if (!(scopeButton instanceof HTMLButtonElement)) return;
+      const nextScope = saveAttendanceDashboardScope(scopeButton.getAttribute('data-dashboard-scope'));
+      renderAttendanceScopeControls(nextScope, 'מרענן את הדשבורד לפי הטווח שנבחר...');
+      renderAttendanceDashboard();
+    });
+    dialog.querySelector('#dashboardCloseBtn').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('close', () => {
+      attendanceCache.opening = false;
+      button.disabled = false;
+      window.setTimeout(() => destroyCharts(attendanceCharts), 0);
+    });
+  }
+
+  function ensureAdminUi() {
+    injectStyles();
+    const panel = byId('adminPanel');
+    if (!panel || adminCache.bound) return;
+    adminCache.bound = true;
+    const adminSidebarTabs = byId('adminSidebarTabs');
+
+    panel.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.id === 'unitsSearch') {
+        scheduleUnitsView(false);
+        return;
+      }
+      if (target.id === 'workbookUrl') {
+        scheduleAdminPreview(true);
+        scheduleAdminDashboard(true);
+        scheduleUnitsView(true);
+        return;
+      }
+      if (target.closest('#crossTabs')) {
+        scheduleAdminPreview(false);
+        scheduleAdminDashboard(false);
+        return;
+      }
+      if (target.matches('#groupColumns, #filterColumns, #editableColumns, #addRowColumns, #phonebookColumns')) {
+        scheduleUnitsView(false);
+      }
+    });
+
+    panel.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.id === 'unitsSearch') {
+        scheduleUnitsView(false);
+        return;
+      }
+      if (target.id === 'workbookUrl') {
+        scheduleAdminPreview(true);
+        scheduleAdminDashboard(true);
+        scheduleUnitsView(true);
+        return;
+      }
+      if (target.closest('#crossTabs')) {
+        scheduleAdminPreview(false);
+        scheduleAdminDashboard(false);
+        return;
+      }
+      if (target.matches('#groupColumns, #filterColumns, #editableColumns, #addRowColumns, #phonebookColumns')) {
+        scheduleUnitsView(false);
+      }
+    });
+
+    panel.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.closest('#graphPreviewRefreshBtn')) {
+        scheduleAdminPreview(true);
+        return;
+      }
+      if (target.closest('#adminDashboardRefreshBtn')) {
+        scheduleAdminDashboard(true);
+        return;
+      }
+      if (target.closest('#addPresetBtn') || target.closest('.gallery-btn') || target.closest('.remove-preset') || target.closest('.clear-preset-select')) {
+        window.setTimeout(() => {
+          scheduleAdminPreview(false);
+          scheduleAdminDashboard(false);
+        }, 40);
+      }
+      if (target.closest('#saveBtn') || target.closest('#unlockBtn')) {
+        window.setTimeout(() => {
+          scheduleAdminPreview(true);
+          scheduleAdminDashboard(true);
+          scheduleUnitsView(true);
+        }, 120);
+      }
+      if (target.closest('.clear-select')) {
+        window.setTimeout(() => scheduleUnitsView(false), 20);
+      }
+    });
+
+    if (adminSidebarTabs) {
+      adminSidebarTabs.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.closest('.admin-side-tab[data-admin-tab="graphs"]')) {
+          window.setTimeout(() => scheduleAdminPreview(adminCache.previewPendingForce || false), 40);
+        }
+        if (target.closest('.admin-side-tab[data-admin-tab="overview"]')) {
+          window.setTimeout(() => scheduleAdminDashboard(adminCache.dashboardPendingForce || false), 40);
+        }
+      });
+    }
+
+    if (adminCache.observer) {
+      adminCache.observer.disconnect();
+      adminCache.observer = null;
+    }
+
+    if (isGraphsTabVisible()) scheduleAdminPreview(false);
+    if (isAdminDashboardTabVisible()) scheduleAdminDashboard(false);
+    scheduleUnitsView(false);
+  }
+
+  const page = String(document.body.dataset.page || '').trim();
+  if (page === 'attendance') ensureAttendanceUi();
+  if (page === 'admin') ensureAdminUi();
+})();

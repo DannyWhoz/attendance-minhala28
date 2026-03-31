@@ -1,0 +1,13679 @@
+/* ============================================================
+   Section: Shared Helpers And Data Access
+   ============================================================ */
+
+(() => {
+  'use strict';
+
+  const SETTINGS_CACHE_KEY = 'attendance-settings-cache-v2';
+  const DEMO_STATE_STORAGE_KEY = 'attendance-demo-state-v1';
+  const SELECTION_KEY = 'attendance-selection-v2';
+  const SHELL_SIDEBAR_KEY = 'attendance-shell-sidebar-v2';
+  const DIGEST_MARGIN_MS = 10 * 1000;
+  const DEFAULT_SETTINGS_LIST_TITLE = 'AttendanceAppSettings';
+  const DEFAULT_SOURCE_LIST_TITLE = 'AttendanceMainDb';
+  const DEFAULT_ATTENDANCE_LIST_TITLE = 'AttendanceDailyDb';
+  const DEFAULT_CHAT_LIST_TITLE = 'AttendanceChatMessages';
+  const DEFAULT_OPERATIONS_LOG_LIST_TITLE = 'AttendanceOperationsLog';
+  const DEFAULT_CASUALTY_LIST_TITLE = 'AttendanceCasualties';
+  const SITE_LIBRARY_MARKERS = new Set([
+    'doclib',
+    'documents',
+    'shared documents',
+    'shared%20documents',
+    '\u05de\u05e1\u05de\u05db\u05d9\u05dd',
+    '\u05de\u05e1\u05de\u05db\u05d9\u05dd \u05de\u05e9\u05d5\u05ea\u05e4\u05d9\u05dd',
+    'siteassets',
+    'style library',
+    'style%20library',
+    'lists',
+    'sitepages',
+    'pages',
+    'formservertemplates',
+    'publishingimages'
+  ]);
+  const SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+
+  const digestCache = new Map();
+  const resolvedListTitleCache = new Map();
+  const ensuredSourceListCache = new Set();
+  const ensuredAttendanceListCache = new Set();
+  let currentUserPromise = null;
+  const entityTypeCache = new Map();
+  const listFieldsCache = new Map();
+  const sharePointFolderFilesCache = new Map();
+  const CHAT_ROOM_QUEUE_KEY = 'attendance-chat-open-room-v1';
+  const SHELL_NOTIFICATION_LAST_ID_KEY = 'attendance-shell-last-chat-id-v1';
+  const SHELL_NOTIFICATION_POLL_MS = 20000;
+  let shellNotificationState = null;
+  let demoDataPromise = null;
+  let demoDataCache = null;
+
+  function getLegacyLocalConfig() {
+    const parsed = safeJsonParse(localStorage.getItem('attendance-kiosk-v3'), null);
+    if (!parsed || typeof parsed !== 'object') return {};
+    return {
+      sharepoint: {
+        siteUrl: String(parsed.siteUrl || '').trim(),
+        attendanceListTitle: String(parsed.attendanceList || '').trim()
+      },
+      workbook: {
+        mainSheet: String(parsed.mainSheet || '').trim(),
+        dataSheet: String(parsed.dataSheet || '').trim(),
+        auditSheet: String(parsed.auditSheet || '').trim()
+      }
+    };
+  }
+
+  function normalizeSharePointListTitle(value, fallback) {
+    const text = String(value || '').trim();
+    if (!text) return String(fallback || '').trim();
+    if (/^https?:\/\//i.test(text)) return String(fallback || '').trim();
+    if (/[\/\\]/.test(text)) return String(fallback || '').trim();
+    return text;
+  }
+
+  function getSharePointPageContext() {
+    const ctx = window._spPageContextInfo || window.spPageContextInfo || null;
+    if (!ctx || typeof ctx !== 'object') return null;
+    return ctx;
+  }
+
+  function getPageContextSiteBase() {
+    const ctx = getSharePointPageContext();
+    if (!ctx) return '';
+    const absolute = String(ctx.webAbsoluteUrl || ctx.siteAbsoluteUrl || '').trim().replace(/\/+$/, '');
+    if (absolute) return absolute;
+    const serverRelative = String(ctx.webServerRelativeUrl || ctx.siteServerRelativeUrl || '').trim().replace(/\/+$/, '');
+    if (!serverRelative) return '';
+    try {
+      return new URL(serverRelative || '/', window.location.origin).toString().replace(/\/+$/, '');
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function getPageContextCurrentUser() {
+    const ctx = getSharePointPageContext();
+    if (!ctx) return null;
+    const user = {
+      name: normalizeDisplayText(String(ctx.userDisplayName || ctx.userTitle || '').trim()),
+      email: normalizeDisplayText(String(ctx.userEmail || ctx.userPrincipalName || '').trim()),
+      login: normalizeDisplayText(String(ctx.userLoginName || ctx.systemUserKey || '').trim())
+    };
+    return user.name || user.email || user.login ? user : null;
+  }
+
+  function cleanLoginIdentity(value) {
+    const text = normalizeDisplayText(String(value || '').trim());
+    if (!text) return '';
+    return String(text.split('|').pop() || '').trim();
+  }
+
+  function hashText(value) {
+    let hash = 2166136261;
+    const text = String(value || '');
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function normalizeChatIdentity(value) {
+    const text = normalizeDisplayText(String(value || '').trim());
+    return text ? text.toLowerCase() : '';
+  }
+
+  function getPrimaryChatIdentity(user) {
+    const source = user && typeof user === 'object' ? user : {};
+    const email = normalizeChatIdentity(source.email || source.userEmail || '');
+    if (email) return `email:${email}`;
+    const login = normalizeChatIdentity(cleanLoginIdentity(source.login || source.loginName || source.userLoginName || ''));
+    if (login) return `login:${login}`;
+    const name = normalizeChatIdentity(source.name || source.displayName || source.title || '');
+    if (name) return `name:${name}`;
+    return '';
+  }
+
+  function buildDirectChatScope(currentUser, peerUser) {
+    const source = currentUser && typeof currentUser === 'object' ? currentUser : {};
+    const peer = peerUser && typeof peerUser === 'object' ? peerUser : {};
+    const currentIdentity = getPrimaryChatIdentity(source);
+    const peerIdentity = getPrimaryChatIdentity(peer);
+    const identities = [currentIdentity, peerIdentity].filter(Boolean).sort();
+    if (identities.length < 2) return null;
+    const peerName = getUserDisplayName(peer) || 'משתמש';
+    const selfName = getUserDisplayName(source) || 'אתם';
+    const participantLabel = [selfName, peerName]
+      .map((value) => normalizeDisplayText(String(value || '').trim()))
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right, 'he', { sensitivity: 'base' }))
+      .join(' • ')
+      .slice(0, 255);
+    return {
+      scopeKey: `direct-${hashText(identities.join('||'))}`,
+      scopeLabel: `שיחה ישירה • ${peerName}`,
+      roomTitle: peerName,
+      roomMeta: 'שיחה ישירה',
+      notice: 'השיחה הזו נשמרת ברשימת הצ׳אט ב-SharePoint ומיועדת להתכתבות ישירה בין שני משתמשים.',
+      conversationType: 'direct',
+      participantA: identities[0],
+      participantB: identities[1],
+      participantLabel,
+      recipientName: String(peer.name || peer.displayName || peer.title || '').trim().slice(0, 255),
+      recipientEmail: String(peer.email || peer.userEmail || '').trim().slice(0, 255),
+      recipientLogin: String(peer.login || peer.loginName || peer.userLoginName || '').trim().slice(0, 255),
+      dateKey: '',
+      groupKey: ''
+    };
+  }
+
+  function getUserDisplayName(user) {
+    const source = user && typeof user === 'object' ? user : {};
+    const name = normalizeDisplayText(String(source.name || source.displayName || source.title || '').trim());
+    if (name) return name;
+    const email = normalizeDisplayText(String(source.email || '').trim());
+    if (email) return email;
+    return cleanLoginIdentity(source.login || source.loginName || '');
+  }
+
+  function getUserAvatarText(user, fallback) {
+    const fallbackText = String(fallback || '').trim().slice(0, 2).toUpperCase() || 'U';
+    const displayName = getUserDisplayName(user);
+    if (!displayName) return fallbackText;
+    const seed = String(displayName.split('@')[0] || '').replace(/[._-]+/g, ' ').trim() || displayName;
+    const parts = seed.split(/\s+/).filter(Boolean);
+    const letters = [];
+    if (parts.length >= 2) {
+      letters.push(Array.from(parts[0])[0] || '');
+      letters.push(Array.from(parts[parts.length - 1])[0] || '');
+    } else if (parts.length === 1) {
+      const chars = Array.from(parts[0]);
+      letters.push(chars[0] || '');
+      letters.push(chars[1] || '');
+    }
+    const out = letters.join('').trim().toUpperCase();
+    return out || fallbackText;
+  }
+
+  function queueChatRoomOpen(scopeKey) {
+    const safeScopeKey = String(scopeKey || '').trim();
+    try {
+      if (!safeScopeKey) {
+        localStorage.removeItem(CHAT_ROOM_QUEUE_KEY);
+        return;
+      }
+      localStorage.setItem(CHAT_ROOM_QUEUE_KEY, safeScopeKey);
+    } catch (error) {}
+  }
+
+  function consumeQueuedChatRoomOpen() {
+    try {
+      const value = String(localStorage.getItem(CHAT_ROOM_QUEUE_KEY) || '').trim();
+      if (!value) return '';
+      localStorage.removeItem(CHAT_ROOM_QUEUE_KEY);
+      return value;
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function getStaticConfig() {
+    const raw = window.ATTENDANCE_STATIC_CONFIG || {};
+    const legacy = getLegacyLocalConfig();
+    const demo = raw.demo || {};
+    const workbook = raw.workbook || {};
+    const sharepoint = raw.sharepoint || {};
+    const defaults = raw.defaults || {};
+    return {
+      appTitle: String(raw.appTitle || 'Attendance'),
+      demo: {
+        enabled: demo.enabled === true,
+        useDummyData: demo.useDummyData === true,
+        dataUrl: String(demo.dataUrl || 'demo/attendance-demo-data.json').trim()
+      },
+      sharepoint: {
+        siteUrl: String(sharepoint.siteUrl || legacy.sharepoint && legacy.sharepoint.siteUrl || '').trim().replace(/\/+$/, ''),
+        workbookUrl: String(sharepoint.workbookUrl || '').trim(),
+        phonebookWorkbookUrl: String(sharepoint.phonebookWorkbookUrl || '').trim(),
+        settingsListTitle: normalizeSharePointListTitle(sharepoint.settingsListTitle, DEFAULT_SETTINGS_LIST_TITLE) || DEFAULT_SETTINGS_LIST_TITLE,
+        settingsItemTitle: String(sharepoint.settingsItemTitle || 'main').trim() || 'main',
+        sourceListTitle: normalizeSharePointListTitle(sharepoint.sourceListTitle, DEFAULT_SOURCE_LIST_TITLE) || DEFAULT_SOURCE_LIST_TITLE,
+        attendanceListTitle: normalizeSharePointListTitle(sharepoint.attendanceListTitle || legacy.sharepoint && legacy.sharepoint.attendanceListTitle, DEFAULT_ATTENDANCE_LIST_TITLE) || DEFAULT_ATTENDANCE_LIST_TITLE,
+        chatListTitle: normalizeSharePointListTitle(sharepoint.chatListTitle, DEFAULT_CHAT_LIST_TITLE) || DEFAULT_CHAT_LIST_TITLE,
+        operationsLogListTitle: normalizeSharePointListTitle(sharepoint.operationsLogListTitle, DEFAULT_OPERATIONS_LOG_LIST_TITLE) || DEFAULT_OPERATIONS_LOG_LIST_TITLE,
+        casualtyListTitle: normalizeSharePointListTitle(sharepoint.casualtyListTitle, DEFAULT_CASUALTY_LIST_TITLE) || DEFAULT_CASUALTY_LIST_TITLE,
+        autoProvisionLists: sharepoint.autoProvisionLists !== false
+      },
+      workbook: {
+        mainSheet: String(workbook.mainSheet || legacy.workbook && legacy.workbook.mainSheet || '\u05de\u05e6\u05d1\u05d4'),
+        dataSheet: String(workbook.dataSheet || legacy.workbook && legacy.workbook.dataSheet || 'data'),
+        auditSheet: String(workbook.auditSheet || legacy.workbook && legacy.workbook.auditSheet || 'AttendanceAudit'),
+        columnCount: Math.max(1, Number(workbook.columnCount || 16)),
+        dropdownSources: {
+          O: normalizeColumnLetter(workbook.dropdownSources && workbook.dropdownSources.O ? workbook.dropdownSources.O : 'A'),
+          P: normalizeColumnLetter(workbook.dropdownSources && workbook.dropdownSources.P ? workbook.dropdownSources.P : 'B'),
+          F: normalizeColumnLetter(workbook.dropdownSources && workbook.dropdownSources.F ? workbook.dropdownSources.F : 'C')
+        }
+      },
+      defaults: {
+        openDates: Array.isArray(defaults.openDates) ? defaults.openDates.slice() : [],
+        adminPasswordHash: String(defaults.adminPasswordHash || ''),
+        groupColumns: Array.isArray(defaults.groupColumns) ? defaults.groupColumns.slice() : ['A'],
+        filterColumns: Array.isArray(defaults.filterColumns) ? defaults.filterColumns.slice() : ['F'],
+        editableColumns: Array.isArray(defaults.editableColumns) ? defaults.editableColumns.slice() : ['M', 'N', 'O', 'P'],
+        addRowColumns: Array.isArray(defaults.addRowColumns) ? defaults.addRowColumns.slice() : ['A', 'B', 'C', 'D', 'F', 'M', 'N', 'O', 'P'],
+        phonebookColumns: Array.isArray(defaults.phonebookColumns) ? defaults.phonebookColumns.slice() : [],
+        dropdownConfigs: Array.isArray(defaults.dropdownConfigs) ? defaults.dropdownConfigs.slice() : [],
+        groupCategories: Array.isArray(defaults.groupCategories) ? defaults.groupCategories.slice() : [],
+        crossTabs: Array.isArray(defaults.crossTabs) ? defaults.crossTabs.slice() : []
+      }
+    };
+  }
+
+  function safeJsonParse(value, fallback) {
+    try {
+      return JSON.parse(String(value || ''));
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function cloneJsonValue(value, fallback) {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function isDemoModeEnabled(configOverride) {
+    const config = configOverride && typeof configOverride === 'object' ? configOverride : getStaticConfig();
+    return !!(config && config.demo && config.demo.enabled);
+  }
+
+  function shouldUseDummyData(configOverride) {
+    const config = configOverride && typeof configOverride === 'object' ? configOverride : getStaticConfig();
+    return !!(isDemoModeEnabled(config) && config.demo && config.demo.useDummyData);
+  }
+
+  function resolveDemoDataUrl(configOverride) {
+    const config = configOverride && typeof configOverride === 'object' ? configOverride : getStaticConfig();
+    return String(config && config.demo && config.demo.dataUrl ? config.demo.dataUrl : 'demo/attendance-demo-data.json').trim();
+  }
+
+  function createEmptyDemoPayload() {
+    return {
+      settings: createDefaultSettings(),
+      sourceRecords: [],
+      attendanceRecords: [],
+      chatMessages: []
+    };
+  }
+
+  function readStoredDemoState() {
+    try {
+      const parsed = safeJsonParse(sessionStorage.getItem(DEMO_STATE_STORAGE_KEY), null);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveDemoState(data) {
+    const normalized = normalizeDemoDataPayload(data);
+    demoDataCache = normalized;
+    try {
+      sessionStorage.setItem(DEMO_STATE_STORAGE_KEY, JSON.stringify(normalized));
+    } catch (error) {}
+    return normalized;
+  }
+
+  function normalizeDemoCells(source, columnCountOverride) {
+    const columnCount = Math.max(1, Number(columnCountOverride || getStaticConfig().workbook.columnCount || 16));
+    if (Array.isArray(source)) {
+      const cells = source.slice(0, columnCount).map((value) => String(value == null ? '' : value));
+      while (cells.length < columnCount) cells.push('');
+      return cells;
+    }
+    const cells = recordToCells(source, columnCount).slice(0, columnCount).map((value) => String(value == null ? '' : value));
+    while (cells.length < columnCount) cells.push('');
+    return cells;
+  }
+
+  function normalizeDemoSourceRecord(record, index, columnCountOverride, fallbackSourceFileName) {
+    const columnCount = Math.max(1, Number(columnCountOverride || getStaticConfig().workbook.columnCount || 16));
+    const cells = normalizeDemoCells(record && record.cells ? record.cells : record, columnCount);
+    const excelRow = Math.max(1, Number(record && (record.excelRow || record.ExcelRowNumber || record.excelRowNumber) || index + 2) || index + 2);
+    const personId = String(cells[columnLetterToIndex('C')] || '').trim();
+    const rowKey = String(record && (record.rowKey || record.PersonKey || record.personKey) || '').trim().slice(0, 255)
+      || (personId ? `${personId}|${excelRow}` : `row|${excelRow}`);
+    return {
+      Id: Math.max(1, Number(record && (record.Id || record.id) || index + 1) || index + 1),
+      Title: String(record && (record.Title || record.title) || rowKey || excelRow).trim().slice(0, 255) || `Source ${index + 1}`,
+      PersonKey: rowKey,
+      ExcelRowNumber: excelRow,
+      UnitName: String(record && (record.UnitName || record.unitName) || cells[columnLetterToIndex('A')] || '').trim().slice(0, 255),
+      SourceFileName: String(record && (record.SourceFileName || record.sourceFileName) || fallbackSourceFileName || '').trim().slice(0, 255),
+      ImportedAt: String(record && (record.ImportedAt || record.importedAt) || '').trim(),
+      ImportedByName: String(record && (record.ImportedByName || record.importedByName) || '').trim().slice(0, 255),
+      ImportedByLogin: String(record && (record.ImportedByLogin || record.importedByLogin) || '').trim().slice(0, 255),
+      JsonSnapshot: JSON.stringify({
+        rowKey,
+        excelRow,
+        cells
+      })
+    };
+  }
+
+  function normalizeDemoAttendanceRecord(record, index, columnCountOverride) {
+    const columnCount = Math.max(1, Number(columnCountOverride || getStaticConfig().workbook.columnCount || 16));
+    const cells = normalizeDemoCells(record && record.cells ? record.cells : record, columnCount);
+    const dateKey = normalizeDateKey(record && (record.dateKey || record.DateKey || record.attendanceDate));
+    const excelRow = Math.max(1, Number(record && (record.excelRow || record.ExcelRowNumber || record.excelRowNumber) || index + 2) || index + 2);
+    const personId = String(cells[columnLetterToIndex('C')] || '').trim();
+    const rowKey = String(record && (record.rowKey || record.PersonKey || record.personKey) || '').trim().slice(0, 255)
+      || (personId ? `${personId}|${excelRow}` : `row|${excelRow}`);
+    const editedAt = String(record && (record.editedAt || record.EditedAt || record.created || record.Created) || '').trim()
+      || new Date(Date.now() + (index * 60000)).toISOString();
+    return {
+      Id: Math.max(1, Number(record && (record.Id || record.id) || index + 1) || index + 1),
+      Title: String(record && (record.Title || record.title) || `${dateKey} ${rowKey || excelRow}`).trim().slice(0, 255) || `Attendance ${index + 1}`,
+      AttendanceDate: dateKey ? `${dateKey}T00:00:00Z` : '',
+      DateKey: dateKey,
+      PersonKey: rowKey,
+      ExcelRowNumber: excelRow,
+      UnitName: String(record && (record.UnitName || record.unitName) || cells[columnLetterToIndex('A')] || '').trim().slice(0, 255),
+      EditedByName: String(record && (record.EditedByName || record.editedByName) || '').trim().slice(0, 255),
+      EditedByLogin: String(record && (record.EditedByLogin || record.editedByLogin) || '').trim().slice(0, 255),
+      EditedAt: editedAt,
+      IsAdminEdit: !!(record && (record.IsAdminEdit === true || record.isAdminEdit === true)),
+      WorkbookUrl: String(record && (record.WorkbookUrl || record.workbookUrl) || '').trim(),
+      JsonSnapshot: JSON.stringify({
+        rowKey,
+        excelRow,
+        cells
+      })
+    };
+  }
+
+  function normalizeDemoChatMessage(record, index) {
+    const conversationType = normalizeDisplayText(String(record && (record.conversationType || record.ConversationType || 'room') || 'room').trim()).toLowerCase() === 'direct'
+      ? 'direct'
+      : 'room';
+    const participants = [
+      normalizeChatIdentity(record && (record.participantA || record.ParticipantA)),
+      normalizeChatIdentity(record && (record.participantB || record.ParticipantB))
+    ].filter(Boolean).sort();
+    const created = String(record && (record.created || record.Created) || '').trim()
+      || new Date(Date.now() + (index * 60000)).toISOString();
+    const scopeKey = String(record && (record.scopeKey || record.ScopeKey) || '').trim();
+    return {
+      Id: Math.max(1, Number(record && (record.Id || record.id) || index + 1) || index + 1),
+      Title: String(record && (record.Title || record.title) || record && (record.scopeLabel || record.ScopeLabel) || scopeKey || 'Chat').trim().slice(0, 255) || 'Chat',
+      ScopeKey: scopeKey,
+      ScopeLabel: String(record && (record.scopeLabel || record.ScopeLabel) || '').trim().slice(0, 255),
+      ConversationType: conversationType,
+      DateKey: normalizeDateKey(record && (record.dateKey || record.DateKey)),
+      GroupKey: String(record && (record.groupKey || record.GroupKey) || '').trim().slice(0, 255),
+      ParticipantA: conversationType === 'direct' ? String(participants[0] || '').slice(0, 255) : '',
+      ParticipantB: conversationType === 'direct' ? String(participants[1] || '').slice(0, 255) : '',
+      ParticipantLabel: String(record && (record.participantLabel || record.ParticipantLabel) || '').trim().slice(0, 255),
+      MessageText: String(record && (record.messageText || record.MessageText) || '').trim(),
+      AuthorName: String(record && (record.authorName || record.AuthorName) || '').trim().slice(0, 255),
+      AuthorEmail: String(record && (record.authorEmail || record.AuthorEmail) || '').trim().slice(0, 255),
+      AuthorLogin: String(record && (record.authorLogin || record.AuthorLogin) || '').trim().slice(0, 255),
+      RecipientName: String(record && (record.recipientName || record.RecipientName) || '').trim().slice(0, 255),
+      RecipientEmail: String(record && (record.recipientEmail || record.RecipientEmail) || '').trim().slice(0, 255),
+      RecipientLogin: String(record && (record.recipientLogin || record.RecipientLogin) || '').trim().slice(0, 255),
+      Created: created
+    };
+  }
+
+  function normalizeDemoDataPayload(payload) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const columnCount = Math.max(1, Number(getStaticConfig().workbook.columnCount || 16));
+    const settingsInput = source.settings && typeof source.settings === 'object'
+      ? { ...source.settings }
+      : {};
+    if (!Array.isArray(settingsInput.sourceHeaders) && Array.isArray(source.sourceHeaders)) settingsInput.sourceHeaders = source.sourceHeaders;
+    if (!Array.isArray(settingsInput.openDates) && Array.isArray(source.openDates)) settingsInput.openDates = source.openDates;
+    const attendanceRecordsInput = Array.isArray(source.attendanceRecords)
+      ? source.attendanceRecords
+      : Object.keys(source.attendanceByDate && typeof source.attendanceByDate === 'object' ? source.attendanceByDate : {}).flatMap((dateKey) => {
+          const rows = Array.isArray(source.attendanceByDate[dateKey]) ? source.attendanceByDate[dateKey] : [];
+          return rows.map((row) => ({ ...row, dateKey: row && (row.dateKey || row.DateKey) ? (row.dateKey || row.DateKey) : dateKey }));
+        });
+    const chatMessagesInput = Array.isArray(source.chatMessages)
+      ? source.chatMessages
+      : Object.keys(source.chatMessagesByScope && typeof source.chatMessagesByScope === 'object' ? source.chatMessagesByScope : {}).flatMap((scopeKey) => {
+          const rows = Array.isArray(source.chatMessagesByScope[scopeKey]) ? source.chatMessagesByScope[scopeKey] : [];
+          return rows.map((row) => ({ ...row, scopeKey: row && (row.scopeKey || row.ScopeKey) ? (row.scopeKey || row.ScopeKey) : scopeKey }));
+        });
+    const sourceFileName = String(source.sourceFileName || source.fileName || 'demo-data').trim();
+    return {
+      settings: normalizeSettings(settingsInput),
+      sourceRecords: (Array.isArray(source.sourceRecords) ? source.sourceRecords : [])
+        .map((record, index) => normalizeDemoSourceRecord(record, index, columnCount, sourceFileName))
+        .sort((left, right) => (
+          Number(left && left.ExcelRowNumber || 0) - Number(right && right.ExcelRowNumber || 0)
+        ) || (
+          Number(left && left.Id || 0) - Number(right && right.Id || 0)
+        )),
+      attendanceRecords: attendanceRecordsInput
+        .map((record, index) => normalizeDemoAttendanceRecord(record, index, columnCount))
+        .filter((record) => !!String(record && record.DateKey || '').trim())
+        .sort((left, right) => (
+          String(left && left.DateKey || '').localeCompare(String(right && right.DateKey || ''))
+        ) || (
+          Number(left && left.ExcelRowNumber || 0) - Number(right && right.ExcelRowNumber || 0)
+        ) || (
+          Number(left && left.Id || 0) - Number(right && right.Id || 0)
+        )),
+      chatMessages: chatMessagesInput
+        .map((record, index) => normalizeDemoChatMessage(record, index))
+        .filter((record) => !!String(record && record.ScopeKey || '').trim())
+        .sort((left, right) => (
+          String(left && left.Created || '').localeCompare(String(right && right.Created || ''))
+        ) || (
+          Number(left && left.Id || 0) - Number(right && right.Id || 0)
+        ))
+    };
+  }
+
+  async function loadDemoData(options) {
+    if (!isDemoModeEnabled()) return normalizeDemoDataPayload(createEmptyDemoPayload());
+    const forceRefresh = !!(options && options.forceRefresh);
+    if (!forceRefresh && demoDataCache) return demoDataCache;
+    if (!forceRefresh && demoDataPromise) return demoDataPromise;
+    demoDataPromise = (async () => {
+      const stored = readStoredDemoState();
+      if (stored) {
+        demoDataCache = normalizeDemoDataPayload(stored);
+        return demoDataCache;
+      }
+      if (!shouldUseDummyData()) {
+        demoDataCache = normalizeDemoDataPayload(createEmptyDemoPayload());
+        return demoDataCache;
+      }
+      const dataUrl = resolveDemoDataUrl();
+      if (!dataUrl) {
+        demoDataCache = normalizeDemoDataPayload(createEmptyDemoPayload());
+        return demoDataCache;
+      }
+      const absoluteUrl = new URL(dataUrl, window.location.href).toString();
+      const response = await fetch(absoluteUrl, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json'
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`לא הצלחנו לטעון את קובץ נתוני הדמו (${response.status}) ${dataUrl}`);
+      }
+      demoDataCache = normalizeDemoDataPayload(await response.json());
+      return demoDataCache;
+    })();
+    try {
+      return await demoDataPromise;
+    } finally {
+      demoDataPromise = null;
+    }
+  }
+
+  async function updateDemoData(mutator) {
+    const current = await loadDemoData();
+    const draft = normalizeDemoDataPayload(cloneJsonValue(current, createEmptyDemoPayload()));
+    const result = typeof mutator === 'function' ? await mutator(draft) : null;
+    const data = saveDemoState(draft);
+    return { data, result };
+  }
+
+  function prefersCollapsedSidebar() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(max-width: 980px)').matches);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function loadShellSidebarPreference() {
+    try {
+      const stored = String(localStorage.getItem(SHELL_SIDEBAR_KEY) || '').trim();
+      if (stored === '1') return true;
+      if (stored === '0') return false;
+    } catch (error) {}
+    return true;
+  }
+
+  function saveShellSidebarPreference(collapsed) {
+    try {
+      localStorage.setItem(SHELL_SIDEBAR_KEY, collapsed ? '1' : '0');
+    } catch (error) {}
+  }
+
+  function ensureShellSidebarBackdrop() {
+    let backdrop = document.querySelector('.qb-sidebar-backdrop');
+    if (backdrop instanceof HTMLButtonElement) return backdrop;
+    backdrop = document.createElement('button');
+    backdrop.type = 'button';
+    backdrop.className = 'qb-sidebar-backdrop';
+    backdrop.hidden = true;
+    backdrop.setAttribute('aria-label', 'סגור תפריט');
+    document.body.appendChild(backdrop);
+    return backdrop;
+  }
+
+  function shellSidebarToggleButtons() {
+    return Array.from(document.querySelectorAll('[data-sidebar-toggle]'))
+      .filter((button) => button instanceof HTMLButtonElement);
+  }
+
+  function applyShellSidebarState(collapsed) {
+    if (!document.body) return;
+    const safeCollapsed = !!collapsed;
+    document.body.classList.toggle('sidebar-collapsed', safeCollapsed);
+    const label = safeCollapsed ? 'הרחב תפריט' : 'כווץ תפריט';
+    shellSidebarToggleButtons().forEach((button) => {
+      button.classList.toggle('is-collapsed', safeCollapsed);
+      button.setAttribute('aria-expanded', String(!safeCollapsed));
+      button.setAttribute('aria-label', label);
+      button.title = label;
+    });
+    const backdrop = ensureShellSidebarBackdrop();
+    backdrop.hidden = safeCollapsed;
+  }
+
+  function initShellSidebar() {
+    if (!document.body || !document.querySelector('.qb-shell') || !document.querySelector('.qb-sidebar')) return;
+    const buttons = shellSidebarToggleButtons();
+    const sidebar = document.querySelector('.qb-sidebar');
+    if (!buttons.length) return;
+    const backdrop = ensureShellSidebarBackdrop();
+    if (backdrop.dataset.bound !== '1') {
+      backdrop.dataset.bound = '1';
+      backdrop.addEventListener('click', () => {
+        applyShellSidebarState(true);
+        saveShellSidebarPreference(true);
+      });
+    }
+    buttons.forEach((button) => {
+      if (button.dataset.bound === '1') return;
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => {
+        const next = !document.body.classList.contains('sidebar-collapsed');
+        applyShellSidebarState(next);
+        saveShellSidebarPreference(next);
+      });
+    });
+    if (sidebar instanceof HTMLElement && sidebar.dataset.bound !== '1') {
+      sidebar.dataset.bound = '1';
+      sidebar.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (!prefersCollapsedSidebar()) return;
+        if (!target.closest('.qb-nav-link, .admin-side-tab')) return;
+        window.setTimeout(() => {
+          applyShellSidebarState(true);
+          saveShellSidebarPreference(true);
+        }, 0);
+      });
+    }
+    if (document.body.dataset.sidebarReady !== '1') {
+      document.body.dataset.sidebarReady = '1';
+      document.addEventListener('keydown', (event) => {
+        if (!(event instanceof KeyboardEvent) || event.key !== 'Escape') return;
+        if (document.body.classList.contains('sidebar-collapsed')) return;
+        applyShellSidebarState(true);
+        saveShellSidebarPreference(true);
+      });
+    }
+    applyShellSidebarState(loadShellSidebarPreference());
+    initShellNotificationCenter();
+  }
+
+  function notificationStorageKey(identity) {
+    const suffix = normalizeChatIdentity(String(identity || '').trim());
+    return suffix ? `${SHELL_NOTIFICATION_LAST_ID_KEY}-${hashText(suffix)}` : SHELL_NOTIFICATION_LAST_ID_KEY;
+  }
+
+  function loadShellNotificationLastId(identity) {
+    try {
+      return Math.max(0, Number(localStorage.getItem(notificationStorageKey(identity)) || 0));
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  function saveShellNotificationLastId(id, identity) {
+    const safeId = Math.max(0, Number(id || 0));
+    try {
+      localStorage.setItem(notificationStorageKey(identity), String(safeId));
+    } catch (error) {}
+  }
+
+  function trimNotificationText(value, maxLength) {
+    const text = normalizeDisplayText(String(value || '').replace(/\s+/g, ' ').trim());
+    const limit = Math.max(24, Number(maxLength || 120));
+    if (!text) return '';
+    return text.length > limit ? `${text.slice(0, limit - 1).trim()}…` : text;
+  }
+
+  function formatNotificationClock(value) {
+    const date = value instanceof Date ? value : new Date(value || Date.now());
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    try {
+      return new Intl.DateTimeFormat('he-IL', { hour: '2-digit', minute: '2-digit' }).format(date);
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function formatNotificationRelative(value) {
+    const date = value instanceof Date ? value : new Date(value || Date.now());
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const diffMs = Date.now() - date.getTime();
+    const diffMinutes = Math.max(0, Math.round(diffMs / 60000));
+    if (diffMinutes < 1) return 'כעת';
+    if (diffMinutes < 60) return `לפני ${formatNumber(diffMinutes)} דק׳`;
+    const diffHours = Math.round(diffMinutes / 60);
+    if (diffHours < 24) return `לפני ${formatNumber(diffHours)} שע׳`;
+    const diffDays = Math.round(diffHours / 24);
+    if (diffDays < 7) return `לפני ${formatNumber(diffDays)} ימים`;
+    return formatNotificationClock(date);
+  }
+
+  function getShellNotificationSections() {
+    return Array.from(document.querySelectorAll('[data-shell-notification-center]'))
+      .filter((section) => section instanceof HTMLElement);
+  }
+
+  function extractFallbackNotifications(section) {
+    if (!(section instanceof HTMLElement)) return [];
+    return Array.from(section.querySelectorAll('[data-fallback-notification]'))
+      .map((card, index) => {
+        const titleNode = card.querySelector('strong');
+        const bodyNode = card.querySelector('span');
+        const barNode = card.querySelector('.qb-side-card-bar');
+        const style = barNode instanceof HTMLElement ? String(barNode.style.background || '').trim() : '';
+        return {
+          key: `fallback-${index + 1}`,
+          title: trimNotificationText(titleNode && titleNode.textContent || '', 72) || 'עדכון',
+          body: trimNotificationText(bodyNode && bodyNode.textContent || '', 140),
+          meta: '',
+          barColor: style || '#5b2d8e',
+          unread: index === 0,
+          href: ''
+        };
+      })
+      .filter((item) => item.title);
+  }
+
+  function buildShellNotificationCardMarkup(item, index) {
+    const safeItem = item && typeof item === 'object' ? item : {};
+    const active = !!safeItem.unread && index === 0;
+    const unreadClass = safeItem.unread ? ' unread' : '';
+    const actionAttrs = safeItem.href
+      ? ` data-notification-href="${escapeHtml(safeItem.href)}"${safeItem.scopeKey ? ` data-notification-scope="${escapeHtml(safeItem.scopeKey)}"` : ''}`
+      : '';
+    return `
+      <article class="qb-side-card qb-notification-card${active ? ' active' : ''}${unreadClass}"${actionAttrs}>
+        <div class="qb-side-card-bar" style="background:${escapeHtml(String(safeItem.barColor || '#5b2d8e'))}"></div>
+        <div class="qb-notification-copy">
+          <strong>${escapeHtml(String(safeItem.title || 'התראה'))}</strong>
+          <span>${escapeHtml(String(safeItem.body || ''))}</span>
+          ${safeItem.meta ? `<small class="qb-notification-meta">${escapeHtml(String(safeItem.meta || ''))}</small>` : ''}
+        </div>
+      </article>
+    `;
+  }
+
+  function renderShellNotifications(items) {
+    const state = shellNotificationState;
+    if (!state || !Array.isArray(state.sections)) return;
+    const live = Array.isArray(items) ? items.slice(0, 3) : [];
+    state.sections.forEach((section) => {
+      const list = section.querySelector('[data-notification-list]');
+      if (!(list instanceof HTMLElement)) return;
+      const fallback = Array.isArray(section.__fallbackNotifications) ? section.__fallbackNotifications : [];
+      const next = live.concat(fallback).slice(0, 3);
+      list.innerHTML = next.map((item, index) => buildShellNotificationCardMarkup(item, index)).join('');
+      const count = section.querySelector('[data-notification-count]');
+      if (count instanceof HTMLElement) {
+        const liveCount = live.length;
+        count.textContent = liveCount ? String(liveCount) : '';
+        count.classList.toggle('hidden', !liveCount);
+      }
+    });
+  }
+
+  function ensureShellNotificationSectionChrome(section) {
+    if (!(section instanceof HTMLElement)) return;
+    let title = section.querySelector('.qb-side-section-title');
+    if (!(title instanceof HTMLElement)) return;
+    title.textContent = 'מרכז התראות';
+    let head = section.querySelector('.qb-side-section-head');
+    if (!(head instanceof HTMLElement)) {
+      head = document.createElement('div');
+      head.className = 'qb-side-section-head';
+      section.insertBefore(head, title);
+      head.appendChild(title);
+    }
+    let count = head.querySelector('[data-notification-count]');
+    if (!(count instanceof HTMLElement)) {
+      count = document.createElement('span');
+      count.className = 'qb-side-section-count hidden';
+      count.setAttribute('data-notification-count', '1');
+      head.appendChild(count);
+    }
+  }
+
+  function ensureShellToastStack() {
+    let stack = document.querySelector('.qb-toast-stack');
+    if (stack instanceof HTMLElement) return stack;
+    stack = document.createElement('div');
+    stack.className = 'qb-toast-stack';
+    document.body.appendChild(stack);
+    return stack;
+  }
+
+  function removeToastElement(toast) {
+    if (!(toast instanceof HTMLElement)) return;
+    toast.classList.add('is-leaving');
+    window.setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 220);
+  }
+
+  function showShellNotificationToasts(items) {
+    const list = Array.isArray(items) ? items.slice(0, 3) : [];
+    if (!list.length) return;
+    const stack = ensureShellToastStack();
+    list.forEach((item) => {
+      const toast = document.createElement('button');
+      toast.type = 'button';
+      toast.className = 'qb-toast';
+      toast.innerHTML = `
+        <span class="qb-toast-bar" style="background:${escapeHtml(String(item.barColor || '#5b2d8e'))}"></span>
+        <span class="qb-toast-copy">
+          <strong>${escapeHtml(String(item.title || 'התראה חדשה'))}</strong>
+          <span>${escapeHtml(String(item.body || ''))}</span>
+        </span>
+      `;
+      toast.addEventListener('click', () => {
+        if (item.scopeKey) queueChatRoomOpen(item.scopeKey);
+        if (item.href) window.location.href = item.href;
+        removeToastElement(toast);
+      });
+      stack.prepend(toast);
+      while (stack.children.length > 3) {
+        const last = stack.lastElementChild;
+        if (!(last instanceof HTMLElement)) break;
+        last.remove();
+      }
+      window.setTimeout(() => removeToastElement(toast), 6200);
+    });
+  }
+
+  function normalizeShellChatNotificationRow(row) {
+    const createdAt = row && row.Created ? new Date(row.Created) : null;
+    return {
+      id: Math.max(0, Number(row && row.Id || 0)),
+      scopeKey: String(row && row.ScopeKey || '').trim(),
+      scopeLabel: String(row && (row.ScopeLabel || row.Title) || '').trim(),
+      conversationType: String(row && row.ConversationType || '').trim().toLowerCase() === 'direct' ? 'direct' : 'room',
+      participantA: normalizeChatIdentity(String(row && row.ParticipantA || '').trim()),
+      participantB: normalizeChatIdentity(String(row && row.ParticipantB || '').trim()),
+      messageText: trimNotificationText(row && row.MessageText || '', 132),
+      authorName: String(row && row.AuthorName || '').trim(),
+      authorEmail: String(row && row.AuthorEmail || '').trim(),
+      authorLogin: String(row && row.AuthorLogin || '').trim(),
+      createdAt: createdAt instanceof Date && !Number.isNaN(createdAt.getTime()) ? createdAt : null
+    };
+  }
+
+  function isIncomingDirectNotification(message, currentUser) {
+    if (!message || message.conversationType !== 'direct') return false;
+    const identity = getPrimaryChatIdentity(currentUser);
+    if (!identity) return false;
+    if (message.participantA !== identity && message.participantB !== identity) return false;
+    const authorIdentity = getPrimaryChatIdentity({
+      name: message.authorName,
+      email: message.authorEmail,
+      login: message.authorLogin
+    });
+    return !authorIdentity || authorIdentity !== identity;
+  }
+
+  function buildShellChatNotification(message) {
+    const sender = trimNotificationText(getUserDisplayName({
+      name: message.authorName,
+      email: message.authorEmail,
+      login: message.authorLogin
+    }) || 'הודעה חדשה', 52);
+    const timeLabel = formatNotificationRelative(message.createdAt);
+    return {
+      key: `chat-${message.id}`,
+      messageId: message.id,
+      scopeKey: message.scopeKey,
+      href: 'chat.html',
+      title: sender,
+      body: message.messageText || 'שלח/ה לכם הודעה חדשה.',
+      meta: ['שיחה ישירה', timeLabel].filter(Boolean).join(' • '),
+      barColor: '#5b2d8e',
+      unread: true
+    };
+  }
+
+  async function refreshShellNotifications() {
+    const state = shellNotificationState;
+    if (!state || state.loading) return;
+    state.loading = true;
+    try {
+      if (!state.currentUser) state.currentUser = await getCurrentUser();
+      if (!state.settings) {
+        const settingsResult = await loadManagementSettings({ preferCache: true });
+        state.settings = settingsResult && settingsResult.settings ? settingsResult.settings : createDefaultSettings();
+      }
+      const participantIdentity = getPrimaryChatIdentity(state.currentUser);
+      if (!participantIdentity) {
+        renderShellNotifications([]);
+        return;
+      }
+      const rows = await loadRecentChatEntries(state.settings, {
+        top: 24,
+        conversationType: 'direct',
+        participantIdentity
+      });
+      const notifications = (Array.isArray(rows) ? rows : [])
+        .map(normalizeShellChatNotificationRow)
+        .filter((message) => isIncomingDirectNotification(message, state.currentUser))
+        .sort((left, right) => Number(right.id || 0) - Number(left.id || 0))
+        .map(buildShellChatNotification);
+      renderShellNotifications(notifications);
+      const latestId = notifications.reduce((max, item) => Math.max(max, Number(item.messageId || 0)), 0);
+      const previousId = Math.max(Number(state.lastNotifiedId || 0), loadShellNotificationLastId(participantIdentity));
+      if (!state.ready) {
+        state.ready = true;
+        state.lastNotifiedId = latestId || previousId;
+        saveShellNotificationLastId(state.lastNotifiedId, participantIdentity);
+        return;
+      }
+      const fresh = notifications.filter((item) => Number(item.messageId || 0) > previousId);
+      if (fresh.length) {
+        showShellNotificationToasts(fresh.reverse());
+        state.lastNotifiedId = Math.max(latestId, previousId);
+        saveShellNotificationLastId(state.lastNotifiedId, participantIdentity);
+      }
+    } catch (error) {
+      renderShellNotifications([]);
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  function initShellNotificationCenter() {
+    const sections = getShellNotificationSections();
+    if (!sections.length) return;
+    if (!shellNotificationState) {
+      shellNotificationState = {
+        sections: [],
+        timer: 0,
+        loading: false,
+        ready: false,
+        lastNotifiedId: 0,
+        settings: null,
+        currentUser: null
+      };
+    }
+    shellNotificationState.sections = sections;
+    sections.forEach((section) => {
+      ensureShellNotificationSectionChrome(section);
+      if (!Array.isArray(section.__fallbackNotifications)) {
+        section.__fallbackNotifications = extractFallbackNotifications(section);
+      }
+      if (section.dataset.notificationsBound !== '1') {
+        section.dataset.notificationsBound = '1';
+        section.addEventListener('click', (event) => {
+          const card = event.target instanceof HTMLElement ? event.target.closest('[data-notification-href]') : null;
+          if (!(card instanceof HTMLElement)) return;
+          const scopeKey = String(card.dataset.notificationScope || '').trim();
+          const href = String(card.dataset.notificationHref || '').trim();
+          if (scopeKey) queueChatRoomOpen(scopeKey);
+          if (href) window.location.href = href;
+        });
+      }
+    });
+    renderShellNotifications([]);
+    if (shellNotificationState.timer) return;
+    refreshShellNotifications().catch(() => {});
+    shellNotificationState.timer = window.setInterval(() => {
+      refreshShellNotifications().catch(() => {});
+    }, SHELL_NOTIFICATION_POLL_MS);
+  }
+
+  function getResponseCharset(response) {
+    try {
+      const contentType = String(response && response.headers ? response.headers.get('content-type') || '' : '');
+      const match = contentType.match(/charset\s*=\s*([^;]+)/i);
+      return match ? String(match[1] || '').trim().replace(/^['"]|['"]$/g, '').toLowerCase() : '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function decodeArrayBufferText(buffer, preferredCharset) {
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer || new ArrayBuffer(0));
+    const encodings = [];
+    const pushEncoding = (value) => {
+      const encoding = String(value || '').trim().toLowerCase();
+      if (!encoding || encodings.includes(encoding)) return;
+      encodings.push(encoding);
+    };
+    pushEncoding(preferredCharset);
+    pushEncoding('utf-8');
+    pushEncoding('windows-1255');
+    pushEncoding('iso-8859-8');
+
+    for (let index = 0; index < encodings.length; index += 1) {
+      try {
+        return new TextDecoder(encodings[index], { fatal: true }).decode(bytes);
+      } catch (error) {}
+    }
+    for (let index = 0; index < encodings.length; index += 1) {
+      try {
+        return new TextDecoder(encodings[index], { fatal: false }).decode(bytes);
+      } catch (error) {}
+    }
+    return '';
+  }
+
+  async function readResponseText(response) {
+    const buffer = await response.arrayBuffer();
+    return decodeArrayBufferText(buffer, getResponseCharset(response));
+  }
+
+  async function readResponseJson(response) {
+    const text = await readResponseText(response);
+    return text ? safeJsonParse(text, null) : null;
+  }
+
+  function decodeUnicodeEscapes(value) {
+    return String(value || '')
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t');
+  }
+
+  function countMatches(value, pattern) {
+    const matches = String(value || '').match(pattern);
+    return matches ? matches.length : 0;
+  }
+
+  function scoreReadableText(value) {
+    const text = String(value || '');
+    return (countMatches(text, /[\u0590-\u05FF]/g) * 4)
+      + countMatches(text, /[A-Za-z0-9]/g)
+      - (countMatches(text, /\uFFFD/g) * 5)
+      - (countMatches(text, /[\u00c3\u00c2\u00d0\u00d1]/g) * 3);
+  }
+
+  function maybeRepairUtf8Mojibake(value) {
+    const text = String(value || '');
+    if (!text || !/[\u00c3\u00c2\u00d0\u00d1\u00d7\u00d9\u00da\uFFFD]/.test(text)) return text;
+    try {
+      const bytes = Uint8Array.from(Array.from(text, (char) => char.charCodeAt(0) & 255));
+      const decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      return scoreReadableText(decoded) > scoreReadableText(text) ? decoded : text;
+    } catch (error) {
+      return text;
+    }
+  }
+
+  function normalizeDisplayText(value) {
+    return maybeRepairUtf8Mojibake(decodeUnicodeEscapes(value));
+  }
+
+  function normalizeCell(value) {
+    if (value === null || value === undefined) return '';
+    return normalizeDisplayText(String(value));
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function escapeXml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function sanitizeSharePointFieldLabel(value, fallback) {
+    const primary = normalizeDisplayText(String(value || ''));
+    const backup = normalizeDisplayText(String(fallback || 'Field'));
+    const source = (primary || backup || 'Field')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/[^0-9A-Za-z\u0590-\u05FF ]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return source || 'Field';
+  }
+
+  function sanitizeSharePointFieldInternalName(value, fallback) {
+    const primary = String(value || '').replace(/[^0-9A-Za-z]+/g, '').trim();
+    const backup = String(fallback || '').replace(/[^0-9A-Za-z]+/g, '').trim();
+    let safe = primary || backup || `Field${Date.now()}`;
+    if (/^\d/.test(safe)) safe = `F${safe}`;
+    return safe.slice(0, 64);
+  }
+
+  function buildSharePointFieldSchema(definition) {
+    const def = definition && typeof definition === 'object' ? definition : {};
+    const internalName = sanitizeSharePointFieldInternalName(def.internalName || def.name || '', 'Field');
+    const displayName = sanitizeSharePointFieldLabel(def.label || def.displayName || internalName, internalName);
+    const name = escapeXml(internalName);
+    const title = escapeXml(displayName);
+    const type = String(def.spType || def.type || 'Text').trim();
+    if (!name) return '';
+    if (type === 'Note') {
+      return `<Field Type="Note" Name="${name}" StaticName="${name}" DisplayName="${title}" NumLines="${Math.max(1, Number(def.rows || 6))}" RichText="FALSE" AppendOnly="FALSE" />`;
+    }
+    if (type === 'Choice') {
+      const choices = (Array.isArray(def.options) ? def.options : [])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean);
+      return `<Field Type="Choice" Name="${name}" StaticName="${name}" DisplayName="${title}" Format="Dropdown"><CHOICES>${choices.map((item) => `<CHOICE>${escapeXml(item)}</CHOICE>`).join('')}</CHOICES></Field>`;
+    }
+    if (type === 'DateTime') {
+      const format = def.input === 'date' ? 'DateOnly' : 'DateTime';
+      return `<Field Type="DateTime" Name="${name}" StaticName="${name}" DisplayName="${title}" Format="${format}" FriendlyDisplayFormat="Disabled" />`;
+    }
+    if (type === 'Number') {
+      return `<Field Type="Number" Name="${name}" StaticName="${name}" DisplayName="${title}" Decimals="${Number(def.decimals || 0)}" />`;
+    }
+    if (type === 'Boolean') {
+      return `<Field Type="Boolean" Name="${name}" StaticName="${name}" DisplayName="${title}" />`;
+    }
+    return `<Field Type="Text" Name="${name}" StaticName="${name}" DisplayName="${title}" MaxLength="255" />`;
+  }
+
+  function formatNumber(value) {
+    return Number(value || 0).toLocaleString('en-US');
+  }
+
+  function todayKey() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function normalizeDateKey(value) {
+    const text = String(value || '').trim();
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '';
+  }
+
+  function normalizeOpenDates(list) {
+    const today = todayKey();
+    const items = Array.isArray(list) ? list.map(normalizeDateKey).filter(Boolean) : [];
+    const unique = Array.from(new Set(items));
+    if (!unique.includes(today)) unique.unshift(today);
+    return unique.sort((left, right) => left.localeCompare(right));
+  }
+
+  function formatDateLabel(dateKey) {
+    const safe = normalizeDateKey(dateKey);
+    if (!safe) return '-';
+    const date = new Date(`${safe}T00:00:00`);
+    return new Intl.DateTimeFormat('he-IL', {
+      weekday: 'short',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(date);
+  }
+
+  function shiftDate(dateKey, offset) {
+    const safe = normalizeDateKey(dateKey) || todayKey();
+    const date = new Date(`${safe}T00:00:00`);
+    date.setDate(date.getDate() + Number(offset || 0));
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function indexToColumnLetter(index) {
+    let num = Number(index) + 1;
+    let out = '';
+    while (num > 0) {
+      const rem = (num - 1) % 26;
+      out = String.fromCharCode(65 + rem) + out;
+      num = Math.floor((num - 1) / 26);
+    }
+    return out;
+  }
+
+  function normalizeColumnLetter(value) {
+    const text = String(value || '').trim().toUpperCase();
+    return /^[A-Z]+$/.test(text) ? text : '';
+  }
+
+  function columnLetterToIndex(value) {
+    const text = normalizeColumnLetter(value);
+    if (!text) return -1;
+    let out = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      out *= 26;
+      out += text.charCodeAt(index) - 64;
+    }
+    return out - 1;
+  }
+
+  function normalizeColumnList(list, fallback) {
+    const values = Array.isArray(list) ? list : [];
+    const result = Array.from(new Set(values.map(normalizeColumnLetter).filter(Boolean)));
+    if (result.length) return result;
+    return Array.isArray(fallback) ? fallback.map(normalizeColumnLetter).filter(Boolean) : [];
+  }
+
+  function buildColumnCatalog(headers, columnCount) {
+    const out = [];
+    for (let index = 0; index < columnCount; index += 1) {
+      const letter = indexToColumnLetter(index);
+      const title = String(headers[index] || '').trim() || letter;
+      out.push({
+        index,
+        letter,
+        title,
+        label: `${title} (${letter})`
+      });
+    }
+    return out;
+  }
+
+  function uniqueSorted(values) {
+    return Array.from(new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean)))
+      .sort((left, right) => left.localeCompare(right, 'he'));
+  }
+
+  function normalizeGroupSelectionValues(values, groupColumns) {
+    const columns = normalizeColumnList(groupColumns, ['A']);
+    const source = values && typeof values === 'object' ? values : {};
+    const out = {};
+    columns.forEach((letter) => {
+      const text = String(source[letter] || '').trim();
+      if (text) out[letter] = text;
+    });
+    return out;
+  }
+
+  function buildGroupSelectionKey(values, groupColumns) {
+    return JSON.stringify(normalizeGroupSelectionValues(values, groupColumns));
+  }
+
+  function buildCompositeValue(cells, columnLetters, separator) {
+    const parts = normalizeColumnList(columnLetters, []).map((letter) => {
+      const index = columnLetterToIndex(letter);
+      return index >= 0 ? String(cells[index] || '').trim() : '';
+    });
+    return {
+      text: parts.filter(Boolean).join(separator || ' | ').trim(),
+      parts
+    };
+  }
+
+  function matchesColumnValues(cells, valuesByColumn) {
+    const entries = Object.entries(valuesByColumn || {});
+    return entries.every(([letter, expected]) => {
+      const index = columnLetterToIndex(letter);
+      if (index < 0) return true;
+      return String(cells[index] || '').trim() === String(expected || '').trim();
+    });
+  }
+
+  const DASHBOARD_SPECIAL_FIELDS = Object.freeze({
+    GROUP_CATEGORY: '__group_category__'
+  });
+  const DASHBOARD_SPECIAL_FIELD_VALUES = new Set(Object.values(DASHBOARD_SPECIAL_FIELDS));
+  const DASHBOARD_CHART_TYPES = new Set(['stacked', 'bar', 'line', 'area', 'pie', 'donut', 'radar', 'radial', 'polar', 'heatmap', 'table', 'metric', 'progress']);
+  const DASHBOARD_SCOPE_TYPES = new Set(['scoped', 'visible', 'all']);
+  const DASHBOARD_AGGREGATIONS = new Set(['count', 'sum', 'avg', 'min', 'max']);
+  const DASHBOARD_LEGEND_POSITIONS = new Set(['top', 'right', 'bottom', 'left']);
+  const DASHBOARD_MAX_ITEMS_LIMIT = 100;
+  const dashboard_max_items_limit = DASHBOARD_MAX_ITEMS_LIMIT;
+  const DASHBOARD_PALETTES = Object.freeze({
+    ocean: ['#0b3c5d', '#126782', '#1d8dbf', '#3aaed8', '#7bdff2', '#ffb703'],
+    aurora: ['#0b3c5d', '#0f6cbf', '#2ec4b6', '#6ee7b7', '#ffe066', '#ff9f1c'],
+    citrus: ['#7c4d00', '#ff9f1c', '#ffd166', '#22c55e', '#06b6d4', '#ef4444'],
+    sunset: ['#7f1d1d', '#c2410c', '#f97316', '#fb7185', '#facc15', '#0ea5e9'],
+    forest: ['#14532d', '#1b7f5a', '#22c55e', '#34d399', '#84cc16', '#f59e0b'],
+    slate: ['#1e293b', '#334155', '#0284c7', '#38bdf8', '#cbd5e1', '#f59e0b'],
+    berry: ['#4c1d95', '#7c3aed', '#c026d3', '#fb7185', '#fda4af', '#f59e0b'],
+    rose: ['#881337', '#be123c', '#e11d48', '#fb7185', '#fecdd3', '#f59e0b']
+  });
+
+  function normalizeDashboardField(value) {
+    const safe = String(value || '').trim();
+    const columnLetter = normalizeColumnLetter(safe);
+    if (columnLetter) return columnLetter;
+    return DASHBOARD_SPECIAL_FIELD_VALUES.has(safe) ? safe : '';
+  }
+
+  function normalizeDashboardFieldList(list, fallback) {
+    const values = Array.isArray(list) ? list : [];
+    const result = Array.from(new Set(values.map(normalizeDashboardField).filter(Boolean)));
+    if (result.length) return result;
+    return Array.isArray(fallback) ? fallback.map(normalizeDashboardField).filter(Boolean) : [];
+  }
+
+  function normalizeDashboardChartType(value, fallback) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (DASHBOARD_CHART_TYPES.has(safe)) return safe;
+    const next = String(fallback || '').trim().toLowerCase();
+    return DASHBOARD_CHART_TYPES.has(next) ? next : 'stacked';
+  }
+
+  function normalizeDashboardScope(value, fallback) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (DASHBOARD_SCOPE_TYPES.has(safe)) return safe;
+    const next = String(fallback || '').trim().toLowerCase();
+    return DASHBOARD_SCOPE_TYPES.has(next) ? next : 'scoped';
+  }
+
+  function normalizeDashboardPalette(value, fallback) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (DASHBOARD_PALETTES[safe]) return safe;
+    const next = String(fallback || '').trim().toLowerCase();
+    return DASHBOARD_PALETTES[next] ? next : 'aurora';
+  }
+
+  function normalizeDashboardSpan(value, fallback) {
+    return Number(value || fallback || 1) >= 2 ? 2 : 1;
+  }
+
+  function normalizeDashboardAggregation(value, fallback) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (DASHBOARD_AGGREGATIONS.has(safe)) return safe;
+    const next = String(fallback || '').trim().toLowerCase();
+    return DASHBOARD_AGGREGATIONS.has(next) ? next : 'count';
+  }
+
+  function normalizeDashboardLegendPosition(value, fallback) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (DASHBOARD_LEGEND_POSITIONS.has(safe)) return safe;
+    const next = String(fallback || '').trim().toLowerCase();
+    return DASHBOARD_LEGEND_POSITIONS.has(next) ? next : 'top';
+  }
+
+  function clampNumber(value, minValue, maxValue, fallback) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return Number(fallback || 0);
+    return Math.min(Number(maxValue), Math.max(Number(minValue), numeric));
+  }
+
+  function normalizeColorList(value) {
+    const raw = Array.isArray(value) ? value : String(value || '').split(/[,\n]+/);
+    return raw
+      .map((item) => String(item || '').trim())
+      .filter((item) => /^#?[0-9a-f]{6}$/i.test(item))
+      .map((item) => (item.startsWith('#') ? item : `#${item}`));
+  }
+
+  function normalizeCrossTabs(list, fallback) {
+    const source = Array.isArray(list) ? list : [];
+    const defaults = Array.isArray(fallback) ? fallback : [];
+    const mapped = source
+      .map((item, index) => {
+        const label = String(item && item.label ? item.label : '').trim();
+        const rowColumns = normalizeDashboardFieldList(item && item.rowColumns, []);
+        const colColumns = normalizeDashboardFieldList(item && item.colColumns, []);
+        if (!label || !rowColumns.length) return null;
+        return {
+          id: String(item && item.id ? item.id : `preset-${index + 1}`).trim() || `preset-${index + 1}`,
+          label,
+          rowColumns,
+          colColumns,
+          chartType: normalizeDashboardChartType(item && item.chartType, 'stacked'),
+          dataScope: normalizeDashboardScope(item && item.dataScope, 'scoped'),
+          aggregation: normalizeDashboardAggregation(item && item.aggregation, 'count'),
+          valueColumn: normalizeColumnLetter(item && item.valueColumn ? item.valueColumn : ''),
+          palette: normalizeDashboardPalette(item && item.palette, 'aurora'),
+          customColors: normalizeColorList(item && item.customColors),
+          layoutSpan: normalizeDashboardSpan(item && item.layoutSpan, 1),
+          layoutSpanTablet: normalizeDashboardSpan(item && item.layoutSpanTablet, item && item.layoutSpan ? item.layoutSpan : 1),
+          layoutSpanMobile: normalizeDashboardSpan(item && item.layoutSpanMobile, 1),
+          maxItems: Math.min(DASHBOARD_MAX_ITEMS_LIMIT, Math.max(3, Number(item && item.maxItems ? item.maxItems : 8) || 8)),
+          showToUsers: item && item.showToUsers !== false,
+          showTotals: item && item.showTotals !== false,
+          showLegend: item && item.showLegend !== false,
+          showValues: item && item.showValues !== false,
+          showLabels: item && item.showLabels !== false,
+          showGrid: item && item.showGrid !== false,
+          animate: item && item.animate !== false,
+          legendPosition: normalizeDashboardLegendPosition(item && item.legendPosition, 'top'),
+          borderWidth: clampNumber(item && item.borderWidth, 0, 8, 2),
+          borderRadius: clampNumber(item && item.borderRadius, 0, 28, 10),
+          padding: clampNumber(item && item.padding, 0, 36, 12),
+          minHeight: clampNumber(item && item.minHeight, 220, 520, 300),
+          animationMs: clampNumber(item && item.animationMs, 0, 5000, 700),
+          scaleStep: clampNumber(item && item.scaleStep, 0, 1000000, 0)
+        };
+      })
+      .filter(Boolean);
+    if (mapped.length) return mapped;
+    return defaults.map((item, index) => ({
+      id: String(item && item.id ? item.id : `preset-${index + 1}`),
+      label: String(item && item.label ? item.label : `Preset ${index + 1}`),
+      rowColumns: normalizeDashboardFieldList(item && item.rowColumns, ['A']),
+      colColumns: normalizeDashboardFieldList(item && item.colColumns, []),
+      chartType: normalizeDashboardChartType(item && item.chartType, 'stacked'),
+      dataScope: normalizeDashboardScope(item && item.dataScope, 'scoped'),
+      aggregation: normalizeDashboardAggregation(item && item.aggregation, 'count'),
+      valueColumn: normalizeColumnLetter(item && item.valueColumn ? item.valueColumn : ''),
+      palette: normalizeDashboardPalette(item && item.palette, 'aurora'),
+      customColors: normalizeColorList(item && item.customColors),
+      layoutSpan: normalizeDashboardSpan(item && item.layoutSpan, 1),
+      layoutSpanTablet: normalizeDashboardSpan(item && item.layoutSpanTablet, item && item.layoutSpan ? item.layoutSpan : 1),
+      layoutSpanMobile: normalizeDashboardSpan(item && item.layoutSpanMobile, 1),
+      maxItems: Math.min(DASHBOARD_MAX_ITEMS_LIMIT, Math.max(3, Number(item && item.maxItems ? item.maxItems : 8) || 8)),
+      showToUsers: item && item.showToUsers !== false,
+      showTotals: item && item.showTotals !== false,
+      showLegend: item && item.showLegend !== false,
+      showValues: item && item.showValues !== false,
+      showLabels: item && item.showLabels !== false,
+      showGrid: item && item.showGrid !== false,
+      animate: item && item.animate !== false,
+      legendPosition: normalizeDashboardLegendPosition(item && item.legendPosition, 'top'),
+      borderWidth: clampNumber(item && item.borderWidth, 0, 8, 2),
+      borderRadius: clampNumber(item && item.borderRadius, 0, 28, 10),
+      padding: clampNumber(item && item.padding, 0, 36, 12),
+      minHeight: clampNumber(item && item.minHeight, 220, 520, 300),
+      animationMs: clampNumber(item && item.animationMs, 0, 5000, 700),
+      scaleStep: clampNumber(item && item.scaleStep, 0, 1000000, 0)
+    }));
+  }
+
+  function normalizeDropdownConfigs(list, fallback) {
+    const source = Array.isArray(list) ? list : [];
+    const defaults = Array.isArray(fallback) ? fallback : [];
+    const mapped = source
+      .map((item, index) => {
+        const column = normalizeColumnLetter(item && item.column ? item.column : '');
+        const options = uniqueSorted(Array.isArray(item && item.options) ? item.options : []);
+        if (!column) return null;
+        return {
+          id: String(item && item.id ? item.id : `dropdown-${index + 1}`).trim() || `dropdown-${index + 1}`,
+          column,
+          options
+        };
+      })
+      .filter(Boolean);
+    if (mapped.length) return mapped;
+    return defaults
+      .map((item, index) => {
+        const column = normalizeColumnLetter(item && item.column ? item.column : '');
+        const options = uniqueSorted(Array.isArray(item && item.options) ? item.options : []);
+        if (!column) return null;
+        return {
+          id: String(item && item.id ? item.id : `dropdown-${index + 1}`).trim() || `dropdown-${index + 1}`,
+          column,
+          options
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function normalizeGroupCategories(list, fallback, groupColumns) {
+    const source = Array.isArray(list) ? list : [];
+    const defaults = Array.isArray(fallback) ? fallback : [];
+    const columns = normalizeColumnList(groupColumns, ['A']);
+    const normalizeSource = (items) => items
+      .map((item, index) => {
+        const label = String(item && item.label ? item.label : '').trim();
+        const selectionsSource = Array.isArray(item && item.selections) ? item.selections : [];
+        const seen = new Map();
+        selectionsSource.forEach((selection) => {
+          const normalized = normalizeGroupSelectionValues(selection, columns);
+          if (!Object.keys(normalized).length) return;
+          seen.set(buildGroupSelectionKey(normalized, columns), normalized);
+        });
+        const selections = Array.from(seen.values());
+        if (!label || !selections.length) return null;
+        return {
+          id: String(item && item.id ? item.id : `group-category-${index + 1}`).trim() || `group-category-${index + 1}`,
+          label,
+          selections
+        };
+      })
+      .filter(Boolean);
+    const mapped = normalizeSource(source);
+    if (mapped.length) return mapped;
+    return normalizeSource(defaults);
+  }
+
+  function normalizeSourceHeaders(input, columnCountOverride) {
+    const columnCount = Math.max(1, Number(columnCountOverride || getStaticConfig().workbook.columnCount || 16));
+    const source = Array.isArray(input) ? input : [];
+    const headers = [];
+    for (let index = 0; index < columnCount; index += 1) {
+      headers.push(String(source[index] || '').trim());
+    }
+    return headers;
+  }
+
+  function resolveSourceHeaders(settings, columnCountOverride) {
+    const columnCount = Math.max(1, Number(columnCountOverride || getStaticConfig().workbook.columnCount || 16));
+    return normalizeSourceHeaders(settings && settings.sourceHeaders, columnCount)
+      .map((header, index) => String(header || '').trim() || indexToColumnLetter(index));
+  }
+
+  function createDefaultSettings() {
+    const config = getStaticConfig();
+    const defaults = config.defaults;
+    const dropdownSources = config.workbook.dropdownSources || {};
+    const crossTabs = Array.isArray(defaults.crossTabs) && defaults.crossTabs.length
+      ? defaults.crossTabs
+      : [
+          { id: 'unit-status', label: '\u05d9\u05d7\u05d9\u05d3\u05d4 \u05de\u05d5\u05dc O', rowColumns: ['A'], colColumns: ['O'] },
+          { id: 'service-result', label: '\u05e1\u05d5\u05d2 \u05e9\u05d9\u05e8\u05d5\u05ea \u05de\u05d5\u05dc P', rowColumns: ['F'], colColumns: ['P'] }
+        ];
+    return {
+      adminPasswordHash: String(defaults.adminPasswordHash || ''),
+      openDates: normalizeOpenDates(defaults.openDates || []),
+      sourceHeaders: normalizeSourceHeaders(defaults.sourceHeaders || [], config.workbook.columnCount),
+      workbookUrlOverride: '',
+      phonebookWorkbookUrlOverride: '',
+      workbookCopyFolderUrlOverride: '',
+      chatListTitleOverride: '',
+      operationsLogListTitleOverride: '',
+      casualtyListTitleOverride: '',
+      customChatRooms: normalizeCustomChatRooms(defaults.customChatRooms, []),
+      groupColumns: normalizeColumnList(defaults.groupColumns, ['A']),
+      filterColumns: normalizeColumnList(defaults.filterColumns, ['F']),
+      editableColumns: normalizeColumnList(defaults.editableColumns, ['M', 'N', 'O', 'P']),
+      addRowColumns: normalizeColumnList(defaults.addRowColumns, ['A', 'B', 'C', 'D', 'F', 'M', 'N', 'O', 'P']),
+      phonebookColumns: normalizeColumnList(defaults.phonebookColumns, []),
+      frozenColumns: normalizeColumnList(defaults.frozenColumns, []),
+      dropdownConfigs: normalizeDropdownConfigs(defaults.dropdownConfigs, []),
+      groupCategories: normalizeGroupCategories(defaults.groupCategories, [], normalizeColumnList(defaults.groupColumns, ['A'])),
+      dropdownSourceColumns: {
+        O: normalizeColumnLetter(dropdownSources.O || 'A') || 'A',
+        P: normalizeColumnLetter(dropdownSources.P || 'B') || 'B',
+        F: normalizeColumnLetter(dropdownSources.F || 'C') || 'C'
+      },
+      crossTabs: normalizeCrossTabs(crossTabs, [])
+    };
+  }
+
+  function normalizeSettings(input) {
+    const defaults = createDefaultSettings();
+    const base = input || {};
+    const groupColumns = normalizeColumnList(base.groupColumns, defaults.groupColumns || ['A']);
+    const next = {
+      adminPasswordHash: String(base.adminPasswordHash || defaults.adminPasswordHash || ''),
+      openDates: normalizeOpenDates(base.openDates || defaults.openDates || [todayKey()]),
+      sourceHeaders: normalizeSourceHeaders(base.sourceHeaders || defaults.sourceHeaders || [], getStaticConfig().workbook.columnCount),
+      workbookUrlOverride: String(base.workbookUrlOverride || '').trim(),
+      phonebookWorkbookUrlOverride: String(base.phonebookWorkbookUrlOverride || '').trim(),
+      workbookCopyFolderUrlOverride: String(base.workbookCopyFolderUrlOverride || '').trim(),
+      chatListTitleOverride: normalizeSharePointListTitle(base.chatListTitleOverride, ''),
+      operationsLogListTitleOverride: normalizeSharePointListTitle(base.operationsLogListTitleOverride, ''),
+      casualtyListTitleOverride: normalizeSharePointListTitle(base.casualtyListTitleOverride, ''),
+      customChatRooms: normalizeCustomChatRooms(base.customChatRooms, defaults.customChatRooms || []),
+      groupColumns,
+      filterColumns: normalizeColumnList(base.filterColumns, defaults.filterColumns || ['F']),
+      editableColumns: normalizeColumnList(base.editableColumns, defaults.editableColumns || ['M', 'N', 'O', 'P']),
+      addRowColumns: normalizeColumnList(base.addRowColumns, defaults.addRowColumns || ['A', 'B', 'C', 'D', 'F', 'M', 'N', 'O', 'P']),
+      phonebookColumns: normalizeColumnList(base.phonebookColumns, defaults.phonebookColumns || []),
+      frozenColumns: normalizeColumnList(base.frozenColumns, defaults.frozenColumns || []),
+      dropdownConfigs: normalizeDropdownConfigs(base.dropdownConfigs, defaults.dropdownConfigs || []),
+      groupCategories: normalizeGroupCategories(base.groupCategories, defaults.groupCategories || [], groupColumns),
+      dropdownSourceColumns: {
+        O: normalizeColumnLetter(base.dropdownSourceColumns && base.dropdownSourceColumns.O ? base.dropdownSourceColumns.O : defaults.dropdownSourceColumns.O) || defaults.dropdownSourceColumns.O,
+        P: normalizeColumnLetter(base.dropdownSourceColumns && base.dropdownSourceColumns.P ? base.dropdownSourceColumns.P : defaults.dropdownSourceColumns.P) || defaults.dropdownSourceColumns.P,
+        F: normalizeColumnLetter(base.dropdownSourceColumns && base.dropdownSourceColumns.F ? base.dropdownSourceColumns.F : defaults.dropdownSourceColumns.F) || defaults.dropdownSourceColumns.F
+      },
+      crossTabs: normalizeCrossTabs(base.crossTabs, defaults.crossTabs || [])
+    };
+    if (!next.groupColumns.length) next.groupColumns = ['A'];
+    if (!next.editableColumns.length) next.editableColumns = ['M', 'N', 'O', 'P'];
+    if (!next.addRowColumns.length) next.addRowColumns = next.editableColumns.slice();
+    return next;
+  }
+
+  function resolveWorkbookUrl(settings) {
+    if (isDemoModeEnabled()) return '';
+    const config = getStaticConfig();
+    const configured = String(config.sharepoint.workbookUrl || '').trim();
+    if (!configured) return '';
+    const override = String(settings && settings.workbookUrlOverride ? settings.workbookUrlOverride : '').trim();
+    return override || configured;
+  }
+
+  function resolvePhonebookWorkbookUrl(settings) {
+    if (isDemoModeEnabled()) return '';
+    const config = getStaticConfig();
+    const configured = String(config.sharepoint.phonebookWorkbookUrl || '').trim();
+    if (configured) {
+      const override = String(settings && settings.phonebookWorkbookUrlOverride ? settings.phonebookWorkbookUrlOverride : '').trim();
+      return override || configured;
+    }
+    return resolveWorkbookUrl(settings);
+  }
+
+  function hasWorkbookSource(settings) {
+    return !!String(resolveWorkbookUrl(settings) || '').trim();
+  }
+
+  function resolveChatListTitle(settings) {
+    const config = getStaticConfig();
+    const override = normalizeSharePointListTitle(settings && settings.chatListTitleOverride, '');
+    return override || normalizeSharePointListTitle(config.sharepoint.chatListTitle, DEFAULT_CHAT_LIST_TITLE) || DEFAULT_CHAT_LIST_TITLE;
+  }
+
+  function resolveOperationsLogListTitle(settings) {
+    const config = getStaticConfig();
+    const override = normalizeSharePointListTitle(settings && settings.operationsLogListTitleOverride, '');
+    return override || normalizeSharePointListTitle(config.sharepoint.operationsLogListTitle, DEFAULT_OPERATIONS_LOG_LIST_TITLE) || DEFAULT_OPERATIONS_LOG_LIST_TITLE;
+  }
+
+  function resolveCasualtyListTitle(settings) {
+    const config = getStaticConfig();
+    const override = normalizeSharePointListTitle(settings && settings.casualtyListTitleOverride, '');
+    return override || normalizeSharePointListTitle(config.sharepoint.casualtyListTitle, DEFAULT_CASUALTY_LIST_TITLE) || DEFAULT_CASUALTY_LIST_TITLE;
+  }
+
+  function resolveDropdownSources(settings) {
+    const config = getStaticConfig();
+    const defaults = config.workbook.dropdownSources || {};
+    const current = settings && settings.dropdownSourceColumns ? settings.dropdownSourceColumns : {};
+    return {
+      O: normalizeColumnLetter(current.O || defaults.O || 'A') || 'A',
+      P: normalizeColumnLetter(current.P || defaults.P || 'B') || 'B',
+      F: normalizeColumnLetter(current.F || defaults.F || 'C') || 'C'
+    };
+  }
+
+  function resolveDropdownConfigs(settings) {
+    const current = settings && Array.isArray(settings.dropdownConfigs) ? settings.dropdownConfigs : [];
+    return normalizeDropdownConfigs(current, []);
+  }
+
+  function resolveGroupCategories(settings, groupColumns) {
+    const current = settings && Array.isArray(settings.groupCategories) ? settings.groupCategories : [];
+    const columns = normalizeColumnList(groupColumns || (settings && settings.groupColumns), ['A']);
+    return normalizeGroupCategories(current, [], columns);
+  }
+
+  function normalizeChatRoomId(value, fallback) {
+    const explicit = String(value || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    if (explicit) return explicit.slice(0, 64);
+    const seed = normalizeDisplayText(String(fallback || value || 'room')).trim() || 'room';
+    return `room-${hashText(seed).slice(0, 12)}`;
+  }
+
+  function normalizeCustomChatRooms(input, defaults) {
+    const source = Array.isArray(input) && input.length
+      ? input
+      : (Array.isArray(defaults) ? defaults : []);
+    const seen = new Set();
+    return source
+      .map((item, index) => {
+        const label = normalizeDisplayText(String(item && item.label ? item.label : '')).trim().slice(0, 80);
+        const description = normalizeDisplayText(String(item && item.description ? item.description : '')).trim().slice(0, 180);
+        if (!label) return null;
+        const baseId = normalizeChatRoomId(item && item.id ? item.id : '', label || `chat-room-${index + 1}`);
+        let nextId = baseId;
+        let counter = 2;
+        while (seen.has(nextId)) {
+          nextId = `${baseId}-${counter}`;
+          counter += 1;
+        }
+        seen.add(nextId);
+        return {
+          id: nextId,
+          label,
+          description
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function resolveCustomChatRooms(settings) {
+    const current = settings && Array.isArray(settings.customChatRooms) ? settings.customChatRooms : [];
+    return normalizeCustomChatRooms(current, []);
+  }
+
+  function extractSelectedChatGroups(selection, groupColumns) {
+    const source = selection && typeof selection === 'object' ? selection : {};
+    const raw = Array.isArray(source.groupSelections) && source.groupSelections.length
+      ? source.groupSelections
+      : (source.groupValues && Object.keys(source.groupValues).length ? [source.groupValues] : []);
+    return raw
+      .map((values) => normalizeGroupSelectionValues(values, groupColumns))
+      .filter((values) => Object.keys(values).length);
+  }
+
+  function formatSelectedChatGroupLabel(values, groupColumns) {
+    return groupColumns
+      .map((letter) => normalizeDisplayText(String(values && values[letter] ? values[letter] : '')).trim())
+      .filter(Boolean)
+      .join(' | ');
+  }
+
+  function buildSelectionChatScope(selection, settings) {
+    const activeSettings = normalizeSettings(settings || createDefaultSettings());
+    const safeSelection = selection && typeof selection === 'object' ? selection : {};
+    const groupColumns = normalizeColumnList(activeSettings.groupColumns, ['A']);
+    const groups = extractSelectedChatGroups(safeSelection, groupColumns);
+    const keys = groups.map((values) => buildGroupSelectionKey(values, groupColumns)).filter(Boolean).sort();
+    const labels = groups.map((values) => formatSelectedChatGroupLabel(values, groupColumns)).filter(Boolean);
+    const categoryId = String(safeSelection.groupCategoryId || '').trim();
+    const categoryLabel = normalizeDisplayText(String(safeSelection.groupCategoryLabel || '')).trim();
+
+    if (categoryId) {
+      const title = categoryLabel || 'קטגוריה';
+      return {
+        scopeKey: `room-category-${normalizeChatRoomId(categoryId, title)}`,
+        scopeLabel: title,
+        roomTitle: title,
+        roomMeta: 'ערוץ קטגוריה',
+        notice: 'השיחה הזו משויכת לקטגוריית הקבוצות שנבחרה במסך הפתיחה.',
+        dateKey: '',
+        groupKey: categoryId.slice(0, 255),
+        isDirect: false,
+        isContext: true,
+        isCustom: false,
+        conversationType: 'room',
+        lastMessageId: 0,
+        lastMessageOwn: false,
+        lastMessageText: '',
+        lastCreatedAt: null
+      };
+    }
+
+    if (labels.length === 1) {
+      const title = labels[0];
+      const groupKey = String(keys[0] || title).trim();
+      return {
+        scopeKey: `room-group-${hashText(groupKey)}`,
+        scopeLabel: title,
+        roomTitle: title,
+        roomMeta: 'צ׳אט קבוצה',
+        notice: 'השיחה הזו משויכת לקבוצה שנבחרה במסך הפתיחה.',
+        dateKey: '',
+        groupKey: groupKey.slice(0, 255),
+        isDirect: false,
+        isContext: true,
+        isCustom: false,
+        conversationType: 'room',
+        lastMessageId: 0,
+        lastMessageOwn: false,
+        lastMessageText: '',
+        lastCreatedAt: null
+      };
+    }
+
+    if (labels.length > 1) {
+      const multiKey = keys.join('||') || labels.join('||');
+      return {
+        scopeKey: `room-multi-${hashText(multiKey)}`,
+        scopeLabel: `${formatNumber(labels.length)} קבוצות`,
+        roomTitle: `${formatNumber(labels.length)} קבוצות`,
+        roomMeta: 'צ׳אט קבוצות משותף',
+        notice: 'השיחה הזו משויכת לבחירה מרובת קבוצות שנשמרה במסך הפתיחה.',
+        dateKey: '',
+        groupKey: `multi:${hashText(multiKey)}`.slice(0, 255),
+        isDirect: false,
+        isContext: true,
+        isCustom: false,
+        conversationType: 'room',
+        lastMessageId: 0,
+        lastMessageOwn: false,
+        lastMessageText: '',
+        lastCreatedAt: null
+      };
+    }
+
+    if (safeSelection.adminMode) {
+      return {
+        scopeKey: 'room-admin-all',
+        scopeLabel: 'כל היחידות',
+        roomTitle: 'כל היחידות',
+        roomMeta: 'ערוץ מערכת',
+        notice: 'השיחה הזו פתוחה לכלל היחידות במערכת.',
+        dateKey: '',
+        groupKey: 'admin:all',
+        isDirect: false,
+        isContext: true,
+        isCustom: false,
+        conversationType: 'room',
+        lastMessageId: 0,
+        lastMessageOwn: false,
+        lastMessageText: '',
+        lastCreatedAt: null
+      };
+    }
+
+    return {
+      scopeKey: 'room-general',
+      scopeLabel: 'צ׳אט כללי',
+      roomTitle: 'צ׳אט כללי',
+      roomMeta: 'ערוץ כללי',
+      notice: 'אפשר להתחיל כאן שיחה כללית, או לבחור קבוצה כדי לעבור לצ׳אט ממוקד יותר.',
+      dateKey: '',
+      groupKey: 'general',
+      isDirect: false,
+      isContext: true,
+      isCustom: false,
+      conversationType: 'room',
+      lastMessageId: 0,
+      lastMessageOwn: false,
+      lastMessageText: '',
+      lastCreatedAt: null
+    };
+  }
+
+  function buildCustomChatRoomScope(roomDefinition) {
+    const room = normalizeCustomChatRooms([roomDefinition], [])[0];
+    if (!room) return null;
+    return {
+      scopeKey: `custom-room-${room.id}`,
+      scopeLabel: room.label,
+      roomTitle: room.label,
+      roomMeta: room.description || 'חדר צוות',
+      notice: room.description || 'חדר צ׳אט שיצר מנהל המערכת.',
+      dateKey: '',
+      groupKey: `custom:${room.id}`,
+      isDirect: false,
+      isContext: false,
+      isCustom: true,
+      conversationType: 'room',
+      lastMessageId: 0,
+      lastMessageOwn: false,
+      lastMessageText: '',
+      lastCreatedAt: null
+    };
+  }
+
+  function isManagedChatRoomScope(scopeKey, settings) {
+    const safeScopeKey = String(scopeKey || '').trim();
+    if (!safeScopeKey) return false;
+    if (safeScopeKey === 'room-general' || safeScopeKey === 'room-admin-all') return true;
+    if (/^room-(group|category|multi)-/i.test(safeScopeKey)) return true;
+    if (!/^custom-room-/i.test(safeScopeKey)) return false;
+    const allowed = new Set(resolveCustomChatRooms(settings).map((item) => `custom-room-${item.id}`));
+    return allowed.has(safeScopeKey);
+  }
+
+  function readStoredSettingsCache() {
+    return safeJsonParse(localStorage.getItem(SETTINGS_CACHE_KEY), null);
+  }
+
+  function saveSettingsCache(settings) {
+    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(normalizeSettings(settings)));
+  }
+
+  function loadSettingsCache() {
+    return normalizeSettings(readStoredSettingsCache() || createDefaultSettings());
+  }
+
+  function saveSelection(selection) {
+    const rawGroups = Array.isArray(selection && selection.groupSelections) ? selection.groupSelections : [];
+    const normalizedGroups = rawGroups
+      .map((groupValues) => {
+        if (!groupValues || typeof groupValues !== 'object') return null;
+        const out = {};
+        Object.entries(groupValues).forEach(([letter, value]) => {
+          const normalizedLetter = normalizeColumnLetter(letter);
+          if (!normalizedLetter) return;
+          const text = String(value || '').trim();
+          if (text) out[normalizedLetter] = text;
+        });
+        return Object.keys(out).length ? out : null;
+      })
+      .filter(Boolean);
+    const fallbackGroup = selection && selection.groupValues && typeof selection.groupValues === 'object' ? selection.groupValues : {};
+    if (!normalizedGroups.length && Object.keys(fallbackGroup).length) normalizedGroups.push(fallbackGroup);
+    const payload = {
+      dateKey: normalizeDateKey(selection && selection.dateKey ? selection.dateKey : ''),
+      groupValues: normalizedGroups[0] || {},
+      groupSelections: normalizedGroups,
+      adminMode: !!(selection && selection.adminMode),
+      forwardSyncEnabled: selection && selection.forwardSyncEnabled !== false,
+      dashboardScope: String(selection && selection.dashboardScope ? selection.dashboardScope : '').trim(),
+      groupCategoryId: String(selection && selection.groupCategoryId ? selection.groupCategoryId : '').trim(),
+      groupCategoryLabel: String(selection && selection.groupCategoryLabel ? selection.groupCategoryLabel : '').trim()
+    };
+    sessionStorage.setItem(SELECTION_KEY, JSON.stringify(payload));
+  }
+
+  function loadSelection() {
+    const parsed = safeJsonParse(sessionStorage.getItem(SELECTION_KEY), null);
+    const rawGroups = Array.isArray(parsed && parsed.groupSelections) ? parsed.groupSelections : [];
+    const normalizedGroups = rawGroups
+      .map((groupValues) => {
+        if (!groupValues || typeof groupValues !== 'object') return null;
+        const out = {};
+        Object.entries(groupValues).forEach(([letter, value]) => {
+          const normalizedLetter = normalizeColumnLetter(letter);
+          if (!normalizedLetter) return;
+          const text = String(value || '').trim();
+          if (text) out[normalizedLetter] = text;
+        });
+        return Object.keys(out).length ? out : null;
+      })
+      .filter(Boolean);
+    const fallbackGroup = parsed && parsed.groupValues && typeof parsed.groupValues === 'object' ? parsed.groupValues : {};
+    if (!normalizedGroups.length && Object.keys(fallbackGroup).length) normalizedGroups.push(fallbackGroup);
+    return {
+      dateKey: normalizeDateKey(parsed && parsed.dateKey ? parsed.dateKey : ''),
+      groupValues: normalizedGroups[0] || {},
+      groupSelections: normalizedGroups,
+      adminMode: !!(parsed && parsed.adminMode),
+      forwardSyncEnabled: parsed && parsed.forwardSyncEnabled !== false,
+      dashboardScope: String(parsed && parsed.dashboardScope ? parsed.dashboardScope : '').trim(),
+      groupCategoryId: String(parsed && parsed.groupCategoryId ? parsed.groupCategoryId : '').trim(),
+      groupCategoryLabel: String(parsed && parsed.groupCategoryLabel ? parsed.groupCategoryLabel : '').trim()
+    };
+  }
+
+  function clearSelection() {
+    sessionStorage.removeItem(SELECTION_KEY);
+  }
+
+  function escapeOData(value) {
+    return String(value || '').replace(/'/g, "''");
+  }
+
+  function normalizePathSegmentForMatch(value) {
+    return decodeRepeated(String(value || '').trim(), 4)
+      .toLowerCase()
+      .replace(/\+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function deriveSiteUrlFromPathHeuristics(url) {
+    const parts = String(url && url.pathname ? url.pathname : '').split('/').filter(Boolean);
+    if (!parts.length) return '';
+    const normalizedParts = parts.map(normalizePathSegmentForMatch);
+    const libraryIndex = normalizedParts.findIndex((part) => SITE_LIBRARY_MARKERS.has(part));
+    if (libraryIndex > 0) {
+      return `${url.origin}/${parts.slice(0, libraryIndex).join('/')}`;
+    }
+    if (!['sites', 'teams', 'personal', 'portals', '_layouts', '_api'].includes(normalizedParts[0])) {
+      if (parts.length >= 2) return `${url.origin}/${parts[0]}/${parts[1]}`;
+      if (parts.length >= 1) return `${url.origin}/${parts[0]}`;
+    }
+    return '';
+  }
+
+  function deriveSiteUrlFromWorkbookUrl(value) {
+    try {
+      const url = new URL(String(value || ''), window.location.href);
+      const contextBase = getPageContextSiteBase();
+      if (contextBase) {
+        try {
+          const contextUrl = new URL(contextBase, window.location.href);
+          const contextPath = String(contextUrl.pathname || '').replace(/\/+$/, '');
+          if (contextPath && url.origin === contextUrl.origin && String(url.pathname || '').startsWith(`${contextPath}/`)) {
+            return contextBase;
+          }
+        } catch (error) {}
+      }
+      const pathname = String(url.pathname || '');
+      const layoutsIndex = pathname.toLowerCase().indexOf('/_layouts/');
+      if (layoutsIndex > 0) return `${url.origin}${pathname.slice(0, layoutsIndex)}`;
+      const apiIndex = pathname.toLowerCase().indexOf('/_api/');
+      if (apiIndex > 0) return `${url.origin}${pathname.slice(0, apiIndex)}`;
+      const parts = url.pathname.split('/').filter(Boolean);
+      const index = parts.findIndex((part) => part === 'sites' || part === 'teams');
+      if (index >= 0 && parts[index + 1]) return `${url.origin}/${parts[index]}/${parts[index + 1]}`;
+      const personalIndex = parts.findIndex((part) => part === 'personal' || part === 'portals');
+      if (personalIndex >= 0 && parts[personalIndex + 1]) return `${url.origin}/${parts[personalIndex]}/${parts[personalIndex + 1]}`;
+      const fromPathHeuristics = deriveSiteUrlFromPathHeuristics(url);
+      if (fromPathHeuristics) return fromPathHeuristics;
+      return url.origin;
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function getSiteBaseUrl() {
+    const config = getStaticConfig();
+    const fromConfig = String(config.sharepoint.siteUrl || '').trim().replace(/\/+$/, '');
+    if (fromConfig) return fromConfig;
+    const fromPageContext = getPageContextSiteBase();
+    if (fromPageContext) return fromPageContext;
+    const fromWorkbook = deriveSiteUrlFromWorkbookUrl(config.sharepoint.workbookUrl);
+    if (fromWorkbook) return fromWorkbook.replace(/\/+$/, '');
+    try {
+      if (window.location.hostname.includes('sharepoint.com') || window.location.hostname.includes('sites.')) {
+        const current = deriveSiteUrlFromWorkbookUrl(window.location.href);
+        if (current) return current.replace(/\/+$/, '');
+      }
+    } catch (error) {}
+    try {
+      const current = deriveSiteUrlFromWorkbookUrl(window.location.href);
+      if (current) return current.replace(/\/+$/, '');
+    } catch (error) {}
+    return '';
+  }
+
+  function extractSharePointErrorText(rawText) {
+    const text = String(rawText || '').trim();
+    if (!text) return '';
+    const parsed = safeJsonParse(text, null);
+    const message = parsed && (
+      parsed.error && parsed.error.message && (parsed.error.message.value || parsed.error.message)
+      || parsed['odata.error'] && parsed['odata.error'].message && (parsed['odata.error'].message.value || parsed['odata.error'].message)
+    );
+    if (typeof message === 'string') return normalizeDisplayText(message);
+    if (message && typeof message.value === 'string') return normalizeDisplayText(message.value);
+    return normalizeDisplayText(text);
+  }
+
+  function buildHttpError(prefix, status, rawText, statusText) {
+    const details = extractSharePointErrorText(rawText) || normalizeDisplayText(statusText) || `HTTP ${status}`;
+    return new Error(`${prefix} ${status}: ${details}`);
+  }
+
+  async function getRequestDigest(siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    if (!siteBase) throw new Error('\u05dc\u05d0 \u05d4\u05d5\u05d2\u05d3\u05e8 Site URL \u05e9\u05dc SharePoint.');
+    const cached = digestCache.get(siteBase);
+    if (cached && cached.value && cached.expiresAt > Date.now() + DIGEST_MARGIN_MS) {
+      return cached.value;
+    }
+    const inlineDigest = document.getElementById('__REQUESTDIGEST');
+    if (inlineDigest && String(inlineDigest.value || '').trim() && siteBase === String(getSiteBaseUrl() || '').trim().replace(/\/+$/, '')) {
+      const next = {
+        value: String(inlineDigest.value || '').trim(),
+        expiresAt: Date.now() + (20 * 60 * 1000)
+      };
+      digestCache.set(siteBase, next);
+      return next.value;
+    }
+    const response = await fetch(`${siteBase}/_api/contextinfo`, {
+      method: 'POST',
+      headers: { Accept: 'application/json;odata=verbose' },
+      credentials: 'include'
+    });
+    if (!response.ok) {
+      const text = await readResponseText(response).catch(() => '');
+      throw buildHttpError('SharePoint contextinfo \u05e0\u05db\u05e9\u05dc', response.status, text, response.statusText);
+    }
+    const json = await readResponseJson(response);
+    const info = (json && json.d && json.d.GetContextWebInformation)
+      || (json && json.GetContextWebInformation)
+      || (json && json.GetContextWebInformationResult)
+      || (json && json.d)
+      || json
+      || null;
+    if (!info || !info.FormDigestValue) throw new Error('\u05dc\u05d0 \u05d4\u05ea\u05e7\u05d1\u05dc RequestDigest \u05de-SharePoint.');
+    const timeout = Number(info.FormDigestTimeoutSeconds || 1200);
+    const next = {
+      value: String(info.FormDigestValue),
+      expiresAt: Date.now() + (timeout * 1000)
+    };
+    digestCache.set(siteBase, next);
+    return next.value;
+  }
+
+  async function spFetchJson(path, options) {
+    const opts = options || {};
+    const siteBase = getSiteBaseUrl();
+    if (!siteBase) throw new Error('\u05dc\u05d0 \u05d4\u05d5\u05d2\u05d3\u05e8 Site URL \u05e9\u05dc SharePoint.');
+    const requestUrl = String(path || '').startsWith('http')
+      ? String(path || '')
+      : `${siteBase}${String(path || '')}`;
+    const response = await fetch(requestUrl, {
+      method: opts.method || 'GET',
+      headers: {
+        Accept: opts.accept || 'application/json;odata=verbose',
+        ...(opts.headers || {})
+      },
+      credentials: 'include',
+      body: opts.body
+    });
+    if (!response.ok) {
+      const text = await readResponseText(response).catch(() => '');
+      const error = buildHttpError('SharePoint', response.status, text, response.statusText);
+      error.status = response.status;
+      throw error;
+    }
+    if (response.status === 204) return null;
+    return readResponseJson(response);
+  }
+
+  async function getCurrentUser() {
+    if (currentUserPromise) return currentUserPromise;
+    currentUserPromise = (async () => {
+      const pageUser = getPageContextCurrentUser();
+      try {
+        const json = await spFetchJson('/_api/web/currentuser?$select=Title,Email,LoginName');
+        const user = json && json.d ? json.d : json;
+        return {
+          name: String((user && user.Title) || (pageUser && pageUser.name) || ''),
+          email: String((user && user.Email) || (pageUser && pageUser.email) || ''),
+          login: String((user && user.LoginName) || (pageUser && pageUser.login) || '')
+        };
+      } catch (error) {
+        return pageUser || { name: '', email: '', login: '' };
+      }
+    })();
+    return currentUserPromise;
+  }
+
+  async function ensureList(listTitle, description) {
+    const escaped = escapeOData(listTitle);
+    try {
+      await spFetchJson(`/_api/web/lists/getbytitle('${escaped}')?$select=Id,Title`);
+      return true;
+    } catch (error) {
+      if (Number(error && error.status) !== 404) throw error;
+    }
+    const config = getStaticConfig();
+    if (!config.sharepoint.autoProvisionLists) {
+      throw new Error(`\u05e8\u05e9\u05d9\u05de\u05ea SharePoint ${listTitle} \u05dc\u05d0 \u05e7\u05d9\u05d9\u05de\u05ea.`);
+    }
+    const digest = await getRequestDigest();
+    await spFetchJson('/_api/web/lists', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json;odata=verbose',
+        'X-RequestDigest': digest
+      },
+      body: JSON.stringify({
+        __metadata: { type: 'SP.List' },
+        AllowContentTypes: true,
+        BaseTemplate: 100,
+        ContentTypesEnabled: true,
+        Description: String(description || ''),
+        Title: listTitle
+      })
+    });
+    return true;
+  }
+
+  async function listExists(listTitle) {
+    const safeTitle = normalizeSharePointListTitle(listTitle, '');
+    if (!safeTitle) return false;
+    try {
+      await spFetchJson(`/_api/web/lists/getbytitle('${escapeOData(safeTitle)}')?$select=Id,Title`);
+      return true;
+    } catch (error) {
+      if (Number(error && error.status) === 404) return false;
+      throw error;
+    }
+  }
+
+  async function resolveListTitle(cacheKey, preferredTitle, fallbackTitle, description) {
+    if (resolvedListTitleCache.has(cacheKey)) return resolvedListTitleCache.get(cacheKey);
+    const candidates = Array.from(new Set([
+      normalizeSharePointListTitle(preferredTitle, fallbackTitle),
+      normalizeSharePointListTitle(fallbackTitle, fallbackTitle)
+    ].filter(Boolean)));
+    for (let index = 0; index < candidates.length; index += 1) {
+      if (await listExists(candidates[index])) {
+        resolvedListTitleCache.set(cacheKey, candidates[index]);
+        return candidates[index];
+      }
+    }
+    let lastError = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      try {
+        await ensureList(candidates[index], description);
+        resolvedListTitleCache.set(cacheKey, candidates[index]);
+        return candidates[index];
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error(`\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d4\u05db\u05d9\u05df \u05d0\u05ea \u05e8\u05e9\u05d9\u05de\u05ea SharePoint \u05e2\u05d1\u05d5\u05e8 ${cacheKey}.`);
+  }
+
+  async function resolveExistingListTitle(cacheKey, preferredTitle, fallbackTitle) {
+    if (resolvedListTitleCache.has(cacheKey)) return resolvedListTitleCache.get(cacheKey);
+    const candidates = Array.from(new Set([
+      normalizeSharePointListTitle(preferredTitle, fallbackTitle),
+      normalizeSharePointListTitle(fallbackTitle, fallbackTitle)
+    ].filter(Boolean)));
+    for (let index = 0; index < candidates.length; index += 1) {
+      if (await listExists(candidates[index])) {
+        resolvedListTitleCache.set(cacheKey, candidates[index]);
+        return candidates[index];
+      }
+    }
+    return '';
+  }
+
+  async function getListFields(listTitle, forceRefresh) {
+    const escapedList = escapeOData(listTitle);
+    if (!forceRefresh && listFieldsCache.has(listTitle)) {
+      return listFieldsCache.get(listTitle).slice();
+    }
+    const json = await spFetchJson(`/_api/web/lists/getbytitle('${escapedList}')/fields?$select=InternalName,Title,TypeAsString,Hidden,ReadOnlyField,Sealed&$top=5000`);
+    const rows = json && json.d && Array.isArray(json.d.results)
+      ? json.d.results
+      : (Array.isArray(json && json.value) ? json.value : []);
+    listFieldsCache.set(listTitle, rows.slice());
+    return rows;
+  }
+
+  function extractSchemaAttribute(schemaXml, attributeName) {
+    const pattern = new RegExp(`${String(attributeName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*["']([^"']*)["']`, 'i');
+    const match = String(schemaXml || '').match(pattern);
+    return match ? String(match[1] || '').trim() : '';
+  }
+
+  function buildFallbackFieldSchema(internalName, schemaXml) {
+    const safeName = escapeXml(String(internalName || '').trim());
+    if (!safeName) return '';
+    const safeSchema = String(schemaXml || '');
+    const type = String(extractSchemaAttribute(safeSchema, 'Type') || 'Text').trim() || 'Text';
+    if (/^note$/i.test(type)) {
+      const rows = Math.max(1, Number(extractSchemaAttribute(safeSchema, 'NumLines') || 6));
+      return `<Field Type="Note" Name="${safeName}" StaticName="${safeName}" DisplayName="${safeName}" NumLines="${rows}" RichText="FALSE" AppendOnly="FALSE" />`;
+    }
+    if (/^choice$/i.test(type)) {
+      const choices = Array.from(safeSchema.matchAll(/<CHOICE>([\s\S]*?)<\/CHOICE>/gi)).map((match) => String(match[1] || '').trim()).filter(Boolean);
+      return `<Field Type="Choice" Name="${safeName}" StaticName="${safeName}" DisplayName="${safeName}" Format="Dropdown" FillInChoice="FALSE"><CHOICES>${choices.map((item) => `<CHOICE>${escapeXml(item)}</CHOICE>`).join('')}</CHOICES></Field>`;
+    }
+    if (/^datetime$/i.test(type)) {
+      const format = String(extractSchemaAttribute(safeSchema, 'Format') || 'DateTime').trim().toLowerCase() === 'dateonly'
+        ? 'DateOnly'
+        : 'DateTime';
+      return `<Field Type="DateTime" Name="${safeName}" StaticName="${safeName}" DisplayName="${safeName}" Format="${format}" />`;
+    }
+    if (/^number$/i.test(type)) {
+      const decimals = Number(extractSchemaAttribute(safeSchema, 'Decimals') || 0);
+      return `<Field Type="Number" Name="${safeName}" StaticName="${safeName}" DisplayName="${safeName}" Decimals="${Number.isFinite(decimals) ? decimals : 0}" />`;
+    }
+    if (/^boolean$/i.test(type)) {
+      return `<Field Type="Boolean" Name="${safeName}" StaticName="${safeName}" DisplayName="${safeName}" />`;
+    }
+    return `<Field Type="Text" Name="${safeName}" StaticName="${safeName}" DisplayName="${safeName}" MaxLength="255" />`;
+  }
+
+  async function fieldExists(listTitle, internalName, forceRefresh) {
+    const rows = await getListFields(listTitle, forceRefresh);
+    return rows.some((row) => {
+      const rowInternalName = String(row && row.InternalName || '').trim();
+      const rowTitle = String(row && row.Title || '').trim();
+      return rowInternalName === internalName || rowTitle === internalName;
+    });
+  }
+
+  async function createFieldBySchema(listTitle, schemaXml, digestOverride) {
+    const escapedList = escapeOData(listTitle);
+    const digest = digestOverride || await getRequestDigest();
+    await spFetchJson(`/_api/web/lists/getbytitle('${escapedList}')/fields/createfieldasxml`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json;odata=verbose',
+        'X-RequestDigest': digest
+      },
+      body: JSON.stringify({
+        parameters: {
+          __metadata: { type: 'SP.XmlSchemaFieldCreationInformation' },
+          Options: 0,
+          SchemaXml: schemaXml
+        }
+      })
+    });
+    listFieldsCache.delete(listTitle);
+    return true;
+  }
+
+  async function ensureField(listTitle, internalName, schemaXml) {
+    const safeInternalName = sanitizeSharePointFieldInternalName(internalName || '', internalName || 'Field');
+    try {
+      if (await fieldExists(listTitle, safeInternalName)) return false;
+    } catch (error) {
+      if (![400, 404].includes(Number(error && error.status))) throw error;
+    }
+    const digest = await getRequestDigest();
+    try {
+      await createFieldBySchema(listTitle, schemaXml, digest);
+      return true;
+    } catch (error) {
+      const fallbackSchema = buildFallbackFieldSchema(safeInternalName, schemaXml);
+      if (fallbackSchema && fallbackSchema !== schemaXml) {
+        try {
+          await createFieldBySchema(listTitle, fallbackSchema, digest);
+          return true;
+        } catch (fallbackError) {
+          if (await fieldExists(listTitle, safeInternalName, true).catch(() => false)) return false;
+          throw fallbackError;
+        }
+      }
+      if (await fieldExists(listTitle, safeInternalName, true).catch(() => false)) return false;
+      throw error;
+    }
+  }
+
+  async function ensureFieldIndexed(listTitle, fieldInternalName) {
+    const escapedList = escapeOData(listTitle);
+    const escapedField = escapeOData(fieldInternalName);
+    const siteBase = getSiteBaseUrl();
+    const digest = await getRequestDigest();
+    const fieldUrl = `${siteBase}/_api/web/lists/getbytitle('${escapedList}')/fields/getbyinternalnameortitle('${escapedField}')`;
+    try {
+      const fieldData = await spFetchJson(fieldUrl, { accept: 'application/json;odata=verbose' });
+      if (fieldData && fieldData.d && fieldData.d.Indexed) {
+        return; // Already indexed
+      }
+    } catch (e) {
+      // Field might not exist, or other error. Proceed to try and set it.
+    }
+    await fetch(fieldUrl, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json;odata=verbose',
+        'Content-Type': 'application/json;odata=verbose',
+        'X-RequestDigest': digest,
+        'IF-MATCH': '*',
+        'X-HTTP-Method': 'MERGE'
+      },
+      body: JSON.stringify({
+        __metadata: { type: 'SP.Field' },
+        Indexed: true
+      })
+    });
+  }
+
+  async function updateFieldTitle(listTitle, fieldInternalName, nextTitle) {
+    const safeListTitle = String(listTitle || '').trim();
+    const safeFieldName = String(fieldInternalName || '').trim();
+    const safeTitle = sanitizeSharePointFieldLabel(nextTitle || safeFieldName, safeFieldName);
+    if (!safeListTitle || !safeFieldName) throw new Error('לא ניתן לעדכן שדה ללא שם רשימה ושם פנימי.');
+    const escapedList = escapeOData(safeListTitle);
+    const escapedField = escapeOData(safeFieldName);
+    const digest = await getRequestDigest();
+    const siteBase = getSiteBaseUrl();
+    const response = await fetch(`${siteBase}/_api/web/lists/getbytitle('${escapedList}')/fields/getbyinternalnameortitle('${escapedField}')`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json;odata=verbose',
+        'Content-Type': 'application/json;odata=verbose',
+        'X-RequestDigest': digest,
+        'IF-MATCH': '*',
+        'X-HTTP-Method': 'MERGE'
+      },
+      body: JSON.stringify({
+        __metadata: { type: 'SP.Field' },
+        Title: safeTitle
+      })
+    });
+    if (!response.ok) {
+      const text = await readResponseText(response).catch(() => '');
+      throw buildHttpError('SharePoint field update', response.status, text, response.statusText);
+    }
+    listFieldsCache.delete(safeListTitle);
+    return safeTitle;
+  }
+
+  async function getListEntityType(listTitle) {
+    if (entityTypeCache.has(listTitle)) return entityTypeCache.get(listTitle);
+    const escaped = escapeOData(listTitle);
+    const json = await spFetchJson(`/_api/web/lists/getbytitle('${escaped}')?$select=ListItemEntityTypeFullName`);
+    const row = json && json.d ? json.d : json;
+    const value = row ? String(row.ListItemEntityTypeFullName || '') : '';
+    if (!value) throw new Error(`\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0 Entity Type \u05e2\u05d1\u05d5\u05e8 ${listTitle}`);
+    entityTypeCache.set(listTitle, value);
+    return value;
+  }
+
+  async function listItems(listTitle, query) {
+    const escaped = escapeOData(listTitle);
+    const json = await spFetchJson(`/_api/web/lists/getbytitle('${escaped}')/items${query || '?$top=5000'}`);
+    const rows = json && json.d && Array.isArray(json.d.results)
+      ? json.d.results
+      : (Array.isArray(json && json.value) ? json.value : []);
+    return rows;
+  }
+
+  async function loadSharePointLists() {
+    const json = await spFetchJson('/_api/web/lists?$select=Id,Title,Description,Hidden,ItemCount,BaseTemplate&$top=5000');
+    const rows = json && json.d && Array.isArray(json.d.results)
+      ? json.d.results
+      : (Array.isArray(json && json.value) ? json.value : []);
+    return rows
+      .map((row) => ({
+        id: String(row && row.Id || '').trim(),
+        title: String(row && row.Title || '').trim(),
+        description: String(row && row.Description || '').trim(),
+        hidden: !!(row && row.Hidden),
+        itemCount: Number(row && row.ItemCount || 0),
+        baseTemplate: Number(row && row.BaseTemplate || 0)
+      }))
+      .filter((row) => row.title && !row.hidden)
+      .sort((left, right) => String(left.title || '').localeCompare(String(right.title || ''), 'he', { numeric: true, sensitivity: 'base' }));
+  }
+
+  async function createListItem(listTitle, payload) {
+    const escaped = escapeOData(listTitle);
+    const digest = await getRequestDigest();
+    const entityType = await getListEntityType(listTitle);
+    const json = await spFetchJson(`/_api/web/lists/getbytitle('${escaped}')/items`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json;odata=verbose',
+        'X-RequestDigest': digest
+      },
+      body: JSON.stringify({
+        __metadata: { type: entityType },
+        ...payload
+      })
+    });
+    return json && json.d ? json.d : json;
+  }
+
+  async function updateListItem(listTitle, itemId, payload) {
+    const escaped = escapeOData(listTitle);
+    const digest = await getRequestDigest();
+    const entityType = await getListEntityType(listTitle);
+    const siteBase = getSiteBaseUrl();
+    const response = await fetch(`${siteBase}/_api/web/lists/getbytitle('${escaped}')/items(${Number(itemId)})`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json;odata=verbose',
+        'Content-Type': 'application/json;odata=verbose',
+        'X-RequestDigest': digest,
+        'IF-MATCH': '*',
+        'X-HTTP-Method': 'MERGE'
+      },
+      body: JSON.stringify({
+        __metadata: { type: entityType },
+        ...payload
+      })
+    });
+    if (!response.ok) {
+      const text = await readResponseText(response).catch(() => '');
+      throw buildHttpError('SharePoint item update', response.status, text, response.statusText);
+    }
+    return true;
+  }
+
+  async function deleteListItem(listTitle, itemId) {
+    const escaped = escapeOData(listTitle);
+    const digest = await getRequestDigest();
+    const siteBase = getSiteBaseUrl();
+    const response = await fetch(`${siteBase}/_api/web/lists/getbytitle('${escaped}')/items(${Number(itemId)})`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json;odata=verbose',
+        'X-RequestDigest': digest,
+        'IF-MATCH': '*',
+        'X-HTTP-Method': 'DELETE'
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw buildHttpError('SharePoint item delete', response.status, text, response.statusText);
+    }
+    return true;
+  }
+
+  async function ensureSettingsListReady() {
+    const config = getStaticConfig();
+    if (isDemoModeEnabled(config)) {
+      return normalizeSharePointListTitle(config.sharepoint.settingsListTitle, DEFAULT_SETTINGS_LIST_TITLE) || DEFAULT_SETTINGS_LIST_TITLE;
+    }
+    const listTitle = await resolveListTitle('settings', config.sharepoint.settingsListTitle, DEFAULT_SETTINGS_LIST_TITLE, 'Attendance app settings');
+    await ensureList(listTitle, 'Attendance app settings');
+    await ensureField(listTitle, 'JsonConfig', "<Field Type='Note' Name='JsonConfig' DisplayName='JsonConfig' NumLines='18' RichText='FALSE' AppendOnly='FALSE' />");
+    await ensureField(listTitle, 'UpdatedAt', "<Field Type='DateTime' Name='UpdatedAt' DisplayName='UpdatedAt' Format='DateTime' FriendlyDisplayFormat='Disabled' />");
+    await ensureField(listTitle, 'UpdatedBy', "<Field Type='Text' Name='UpdatedBy' DisplayName='UpdatedBy' MaxLength='255' />");
+    return listTitle;
+  }
+
+  async function ensureChatListReady(settings) {
+    if (isDemoModeEnabled()) {
+      return resolveChatListTitle(settings);
+    }
+    const listTitle = await resolveListTitle('chat', resolveChatListTitle(settings), DEFAULT_CHAT_LIST_TITLE, 'Attendance chat messages');
+    await ensureList(listTitle, 'Attendance chat messages');
+    await ensureField(listTitle, 'ScopeKey', "<Field Type='Text' Name='ScopeKey' DisplayName='ScopeKey' MaxLength='255' />");
+    await ensureField(listTitle, 'ScopeLabel', "<Field Type='Text' Name='ScopeLabel' DisplayName='ScopeLabel' MaxLength='255' />");
+    await ensureField(listTitle, 'ConversationType', "<Field Type='Text' Name='ConversationType' DisplayName='ConversationType' MaxLength='32' />");
+    await ensureField(listTitle, 'DateKey', "<Field Type='Text' Name='DateKey' DisplayName='DateKey' MaxLength='32' />");
+    await ensureField(listTitle, 'GroupKey', "<Field Type='Text' Name='GroupKey' DisplayName='GroupKey' MaxLength='255' />");
+    await ensureField(listTitle, 'ParticipantA', "<Field Type='Text' Name='ParticipantA' DisplayName='ParticipantA' MaxLength='255' />");
+    await ensureField(listTitle, 'ParticipantB', "<Field Type='Text' Name='ParticipantB' DisplayName='ParticipantB' MaxLength='255' />");
+    await ensureField(listTitle, 'ParticipantLabel', "<Field Type='Text' Name='ParticipantLabel' DisplayName='ParticipantLabel' MaxLength='255' />");
+    await ensureField(listTitle, 'MessageText', "<Field Type='Note' Name='MessageText' DisplayName='MessageText' NumLines='10' RichText='FALSE' AppendOnly='FALSE' />");
+    await ensureField(listTitle, 'AuthorName', "<Field Type='Text' Name='AuthorName' DisplayName='AuthorName' MaxLength='255' />");
+    await ensureField(listTitle, 'AuthorEmail', "<Field Type='Text' Name='AuthorEmail' DisplayName='AuthorEmail' MaxLength='255' />");
+    await ensureField(listTitle, 'AuthorLogin', "<Field Type='Text' Name='AuthorLogin' DisplayName='AuthorLogin' MaxLength='255' />");
+    await ensureField(listTitle, 'RecipientName', "<Field Type='Text' Name='RecipientName' DisplayName='RecipientName' MaxLength='255' />");
+    await ensureField(listTitle, 'RecipientEmail', "<Field Type='Text' Name='RecipientEmail' DisplayName='RecipientEmail' MaxLength='255' />");
+    await ensureField(listTitle, 'RecipientLogin', "<Field Type='Text' Name='RecipientLogin' DisplayName='RecipientLogin' MaxLength='255' />");
+    return listTitle;
+  }
+
+  async function loadChatMessages(settings, scopeKey, options) {
+    const safeScopeKey = String(scopeKey || '').trim();
+    if (!safeScopeKey) return [];
+    if (isDemoModeEnabled()) {
+      const demoData = await loadDemoData();
+      const top = Math.max(1, Math.min(500, Number(options && options.top || 250)));
+      return demoData.chatMessages
+        .filter((row) => String(row && row.ScopeKey || '').trim() === safeScopeKey)
+        .sort((left, right) => String(left && left.Created || '').localeCompare(String(right && right.Created || '')))
+        .slice(0, top);
+    }
+    const listTitle = await ensureChatListReady(settings);
+    const top = Math.max(1, Math.min(500, Number(options && options.top || 250)));
+    return listItems(
+      listTitle,
+      `?$top=${top}&$select=Id,Title,ScopeKey,ScopeLabel,ConversationType,DateKey,GroupKey,ParticipantA,ParticipantB,ParticipantLabel,MessageText,AuthorName,AuthorEmail,AuthorLogin,RecipientName,RecipientEmail,RecipientLogin,Created&$filter=ScopeKey eq '${escapeOData(safeScopeKey)}'&$orderby=Created asc`
+    );
+  }
+
+  async function loadRecentChatEntries(settings, options) {
+    if (isDemoModeEnabled()) {
+      const demoData = await loadDemoData();
+      const top = Math.max(1, Math.min(500, Number(options && options.top || 250)));
+      const conversationType = normalizeDisplayText(String(options && options.conversationType ? options.conversationType : '').trim()).toLowerCase();
+      const participantIdentity = normalizeChatIdentity(String(options && options.participantIdentity ? options.participantIdentity : '').trim());
+      return demoData.chatMessages
+        .filter((row) => {
+          if (conversationType && String(row && row.ConversationType || '').trim() !== conversationType) return false;
+          if (!participantIdentity) return true;
+          return [row && row.ParticipantA, row && row.ParticipantB].some((value) => normalizeChatIdentity(value) === participantIdentity);
+        })
+        .sort((left, right) => String(right && right.Created || '').localeCompare(String(left && left.Created || '')))
+        .slice(0, top);
+    }
+    const listTitle = await ensureChatListReady(settings);
+    const top = Math.max(1, Math.min(500, Number(options && options.top || 250)));
+    const filters = [];
+    const conversationType = normalizeDisplayText(String(options && options.conversationType ? options.conversationType : '').trim()).toLowerCase();
+    const participantIdentity = normalizeChatIdentity(String(options && options.participantIdentity ? options.participantIdentity : '').trim());
+    if (conversationType) filters.push(`ConversationType eq '${escapeOData(conversationType)}'`);
+    if (participantIdentity) filters.push(`(ParticipantA eq '${escapeOData(participantIdentity)}' or ParticipantB eq '${escapeOData(participantIdentity)}')`);
+    const filterQuery = filters.length ? `&$filter=${filters.join(' and ')}` : '';
+    return listItems(
+      listTitle,
+      `?$top=${top}&$select=Id,Title,ScopeKey,ScopeLabel,ConversationType,DateKey,GroupKey,ParticipantA,ParticipantB,ParticipantLabel,MessageText,AuthorName,AuthorEmail,AuthorLogin,RecipientName,RecipientEmail,RecipientLogin,Created${filterQuery}&$orderby=Created desc`
+    );
+  }
+
+  async function createChatMessage(settings, payload) {
+    const messageText = String(payload && payload.messageText ? payload.messageText : '').trim();
+    const scopeKey = String(payload && payload.scopeKey ? payload.scopeKey : '').trim();
+    const conversationType = normalizeDisplayText(String(payload && payload.conversationType ? payload.conversationType : 'room').trim()).toLowerCase() === 'direct'
+      ? 'direct'
+      : 'room';
+    const participantA = normalizeChatIdentity(String(payload && payload.participantA ? payload.participantA : '').trim());
+    const participantB = normalizeChatIdentity(String(payload && payload.participantB ? payload.participantB : '').trim());
+    const participants = [participantA, participantB].filter(Boolean).sort();
+    if (!messageText) throw new Error('יש להזין הודעה לפני השליחה.');
+    if (!scopeKey) throw new Error('לא ניתן לשלוח הודעה ללא חדר פעיל.');
+    if (conversationType === 'direct' && participants.length < 2) {
+      throw new Error('יש לבחור משתמש נוסף כדי להתחיל שיחה ישירה.');
+    }
+    if (isDemoModeEnabled()) {
+      const currentUser = await getCurrentUser();
+      let createdRow = null;
+      await updateDemoData((draft) => {
+        const existingRows = Array.isArray(draft.chatMessages) ? draft.chatMessages : [];
+        const nextId = existingRows.reduce((maxValue, row) => Math.max(maxValue, Number(row && row.Id || 0)), 0) + 1;
+        createdRow = normalizeDemoChatMessage({
+          Id: nextId,
+          title: String(payload && payload.scopeLabel ? payload.scopeLabel : scopeKey).trim().slice(0, 255) || 'Chat',
+          scopeKey,
+          scopeLabel: String(payload && payload.scopeLabel ? payload.scopeLabel : '').trim().slice(0, 255),
+          conversationType,
+          dateKey: normalizeDateKey(payload && payload.dateKey ? payload.dateKey : ''),
+          groupKey: String(payload && payload.groupKey ? payload.groupKey : '').trim().slice(0, 255),
+          participantA: conversationType === 'direct' ? participants[0] : '',
+          participantB: conversationType === 'direct' ? participants[1] : '',
+          participantLabel: conversationType === 'direct'
+            ? String(payload && payload.participantLabel ? payload.participantLabel : '').trim().slice(0, 255)
+            : '',
+          messageText,
+          authorName: String(payload && payload.authorName ? payload.authorName : currentUser.name || '').trim().slice(0, 255),
+          authorEmail: String(payload && payload.authorEmail ? payload.authorEmail : currentUser.email || '').trim().slice(0, 255),
+          authorLogin: String(payload && payload.authorLogin ? payload.authorLogin : currentUser.login || currentUser.email || '').trim().slice(0, 255),
+          recipientName: conversationType === 'direct' ? String(payload && payload.recipientName ? payload.recipientName : '').trim().slice(0, 255) : '',
+          recipientEmail: conversationType === 'direct' ? String(payload && payload.recipientEmail ? payload.recipientEmail : '').trim().slice(0, 255) : '',
+          recipientLogin: conversationType === 'direct' ? String(payload && payload.recipientLogin ? payload.recipientLogin : '').trim().slice(0, 255) : '',
+          created: new Date().toISOString()
+        }, existingRows.length);
+        draft.chatMessages = existingRows.concat(createdRow).sort((left, right) => (
+          String(left && left.Created || '').localeCompare(String(right && right.Created || ''))
+        ) || (
+          Number(left && left.Id || 0) - Number(right && right.Id || 0)
+        ));
+      });
+      return createdRow;
+    }
+    const listTitle = await ensureChatListReady(settings);
+    return createListItem(listTitle, {
+      Title: String(payload && payload.scopeLabel ? payload.scopeLabel : scopeKey).trim().slice(0, 255) || 'Chat',
+      ScopeKey: scopeKey.slice(0, 255),
+      ScopeLabel: String(payload && payload.scopeLabel ? payload.scopeLabel : '').trim().slice(0, 255),
+      ConversationType: conversationType,
+      DateKey: normalizeDateKey(payload && payload.dateKey ? payload.dateKey : ''),
+      GroupKey: String(payload && payload.groupKey ? payload.groupKey : '').trim().slice(0, 255),
+      ParticipantA: conversationType === 'direct' ? participants[0].slice(0, 255) : '',
+      ParticipantB: conversationType === 'direct' ? participants[1].slice(0, 255) : '',
+      ParticipantLabel: conversationType === 'direct'
+        ? String(payload && payload.participantLabel ? payload.participantLabel : '').trim().slice(0, 255)
+        : '',
+      MessageText: messageText,
+      AuthorName: String(payload && payload.authorName ? payload.authorName : '').trim().slice(0, 255),
+      AuthorEmail: String(payload && payload.authorEmail ? payload.authorEmail : '').trim().slice(0, 255),
+      AuthorLogin: String(payload && payload.authorLogin ? payload.authorLogin : '').trim().slice(0, 255),
+      RecipientName: conversationType === 'direct' ? String(payload && payload.recipientName ? payload.recipientName : '').trim().slice(0, 255) : '',
+      RecipientEmail: conversationType === 'direct' ? String(payload && payload.recipientEmail ? payload.recipientEmail : '').trim().slice(0, 255) : '',
+      RecipientLogin: conversationType === 'direct' ? String(payload && payload.recipientLogin ? payload.recipientLogin : '').trim().slice(0, 255) : ''
+    });
+  }
+
+  async function loadManagementSettings(options) {
+    if (isDemoModeEnabled()) {
+      const demoData = await loadDemoData();
+      const settings = normalizeSettings(demoData && demoData.settings ? demoData.settings : createDefaultSettings());
+      saveSettingsCache(settings);
+      return {
+        settings,
+        source: shouldUseDummyData() ? 'demo-file' : 'demo-local'
+      };
+    }
+    const preferCache = !!(options && options.preferCache);
+    const cached = readStoredSettingsCache();
+    const fallback = normalizeSettings(cached || createDefaultSettings());
+    const config = getStaticConfig();
+    const siteBase = getSiteBaseUrl();
+    if (preferCache && cached) {
+      return { settings: fallback, source: 'local-cache' };
+    }
+    if (!siteBase) {
+      return { settings: fallback, source: 'local', warning: 'SharePoint settings unavailable' };
+    }
+    try {
+      const settingsListTitle = await ensureSettingsListReady();
+      const title = config.sharepoint.settingsItemTitle;
+      const rows = await listItems(settingsListTitle, `?$top=1&$select=Id,Title,JsonConfig&$filter=Title eq '${escapeOData(title)}'`);
+      const row = rows[0];
+      if (!row || !row.JsonConfig) {
+        saveSettingsCache(fallback);
+        return { settings: fallback, source: 'defaults' };
+      }
+      const parsed = safeJsonParse(row.JsonConfig, null);
+      const settings = normalizeSettings(parsed || fallback);
+      saveSettingsCache(settings);
+      return { settings, source: 'sharepoint', itemId: Number(row.Id || 0) };
+    } catch (error) {
+      return { settings: fallback, source: 'local', warning: String(error && error.message ? error.message : error) };
+    }
+  }
+
+  async function saveManagementSettings(settings) {
+    const next = normalizeSettings(settings);
+    saveSettingsCache(next);
+    if (isDemoModeEnabled()) {
+      await updateDemoData((draft) => {
+        draft.settings = next;
+      });
+      return {
+        settings: next,
+        source: 'demo-local'
+      };
+    }
+    const config = getStaticConfig();
+    const siteBase = getSiteBaseUrl();
+    if (!siteBase) {
+      return { settings: next, source: 'local', warning: 'SharePoint settings unavailable' };
+    }
+    try {
+      const settingsListTitle = await ensureSettingsListReady();
+      const currentUser = await getCurrentUser();
+      const rows = await listItems(settingsListTitle, `?$top=1&$select=Id,Title&$filter=Title eq '${escapeOData(config.sharepoint.settingsItemTitle)}'`);
+      const payload = {
+        Title: config.sharepoint.settingsItemTitle,
+        JsonConfig: JSON.stringify(next),
+        UpdatedAt: new Date().toISOString(),
+        UpdatedBy: currentUser.name || currentUser.login || ''
+      };
+      if (rows[0] && rows[0].Id) {
+        await updateListItem(settingsListTitle, Number(rows[0].Id), payload);
+      } else {
+        await createListItem(settingsListTitle, payload);
+      }
+      return { settings: next, source: 'sharepoint' };
+    } catch (error) {
+      return {
+        settings: next,
+        source: 'local',
+        warning: String(error && error.message ? error.message : error)
+      };
+    }
+  }
+
+  function looksLikeExcelPath(value) {
+    return /\.xlsx?(?:$|[?#])/i.test(String(value || ''));
+  }
+
+  function safeDecodeURIComponent(value) {
+    const text = String(value || '');
+    try {
+      return decodeURIComponent(text);
+    } catch (error) {
+      try {
+        const parts = text.match(/%[0-9a-fA-F]{2}|./g) || [];
+        const bytes = Uint8Array.from(parts.map((part) => (
+          part.startsWith('%') ? parseInt(part.slice(1), 16) : (part.charCodeAt(0) & 255)
+        )));
+        return decodeArrayBufferText(bytes, 'windows-1255');
+      } catch (fallbackError) {
+        return text;
+      }
+    }
+  }
+
+  function decodeRepeated(value, rounds) {
+    let out = String(value || '');
+    const max = Math.max(1, Number(rounds || 4));
+    for (let index = 0; index < max; index += 1) {
+      const next = safeDecodeURIComponent(out);
+      if (next === out) break;
+      out = next;
+    }
+    return out;
+  }
+
+  function normalizeSharePointPathCandidate(value) {
+    let path = decodeRepeated(String(value || '').trim(), 4);
+    if (!path) return '';
+    if (/^https?:\/\//i.test(path)) {
+      try {
+        path = new URL(path, window.location.href).pathname;
+      } catch (error) {}
+    }
+    path = path.split('#')[0].split('?')[0];
+    path = path.replace(/^\/+%2f/i, '/').replace(/^\/{2,}/, '/');
+    const shareLinkMatch = path.match(/^\/:[^/]+:\/[a-z]\/(.+)$/i);
+    if (shareLinkMatch && shareLinkMatch[1]) {
+      path = `/${shareLinkMatch[1]}`.replace(/^\/r\//i, '/');
+    }
+    if (!path.startsWith('/')) path = `/${path}`;
+    return decodeRepeated(path, 4).replace(/\/{2,}/g, '/');
+  }
+
+  function normalizeSharePointExcelPathCandidate(value) {
+    return normalizeSharePointPathCandidate(value);
+  }
+
+  function extractSharePointPathFromLink(parsedUrl) {
+    const pathname = normalizeSharePointPathCandidate(parsedUrl.pathname || '');
+    if (pathname && !/\/_layouts\//i.test(pathname) && !/\.aspx$/i.test(pathname)) return pathname;
+    const rootFolder = parsedUrl.searchParams.get('RootFolder') || parsedUrl.searchParams.get('rootfolder');
+    const fileName = parsedUrl.searchParams.get('FileLeafRef') || parsedUrl.searchParams.get('fileleafref') || parsedUrl.searchParams.get('File') || parsedUrl.searchParams.get('file');
+    if (rootFolder && fileName) {
+      const folder = normalizeSharePointPathCandidate(rootFolder).replace(/\/+$/, '');
+      const leaf = decodeRepeated(fileName, 4).replace(/^\/+/, '');
+      const joined = normalizeSharePointPathCandidate(`${folder}/${leaf}`);
+      if (joined && !/\/_layouts\//i.test(joined) && !/\.aspx$/i.test(joined)) return joined;
+    }
+    const paramKeys = ['id', 'Id', 'SourceUrl', 'sourceurl', 'FileRef', 'fileref', 'ServerRelativeUrl', 'serverrelativeurl', 'ServerRelativePath', 'serverrelativepath'];
+    for (let index = 0; index < paramKeys.length; index += 1) {
+      const raw = parsedUrl.searchParams.get(paramKeys[index]);
+      if (!raw) continue;
+      const decoded = decodeRepeated(raw, 4);
+      try {
+        const nested = new URL(decoded, parsedUrl.origin);
+        const nestedPath = normalizeSharePointPathCandidate(nested.pathname);
+        if (nestedPath && !/\/_layouts\//i.test(nestedPath) && !/\.aspx$/i.test(nestedPath)) return nestedPath;
+      } catch (error) {}
+      const pathOnly = normalizeSharePointPathCandidate(decoded);
+      if (pathOnly && !/\/_layouts\//i.test(pathOnly) && !/\.aspx$/i.test(pathOnly)) return pathOnly;
+    }
+    if (rootFolder) return normalizeSharePointPathCandidate(rootFolder);
+    return '';
+  }
+
+  function extractExcelPathFromSharePointLink(parsedUrl) {
+    const path = extractSharePointPathFromLink(parsedUrl);
+    return looksLikeExcelPath(path) ? path : '';
+  }
+
+  function getSharePointSiteBaseForUrl(url) {
+    const derived = String(deriveSiteUrlFromWorkbookUrl(url) || '').trim().replace(/\/+$/, '');
+    const current = String(getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    if (!derived) return current;
+    if (!current) return derived;
+    try {
+      const derivedUrl = new URL(derived, window.location.href);
+      const currentUrl = new URL(current, window.location.href);
+      if (derivedUrl.origin === currentUrl.origin && derivedUrl.pathname === '/') return current;
+    } catch (error) {}
+    return derived;
+  }
+
+  function buildServerRelativePathApiUrl(siteBase, serverRelativePath, suffix, extraParams) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(serverRelativePath);
+    const query = buildApiQueryString({
+      '@p': `'${targetPath}'`,
+      ...(extraParams || {})
+    });
+    return `${base}/_api/web/GetFileByServerRelativePath(decodedurl=@p)${suffix || ''}${query ? `?${query}` : ''}`;
+  }
+
+  function buildFolderPathApiUrl(siteBase, folderPath, suffix, extraParams) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(folderPath);
+    const query = buildApiQueryString({
+      '@p': `'${targetPath}'`,
+      ...(extraParams || {})
+    });
+    return `${base}/_api/web/GetFolderByServerRelativePath(decodedurl=@p)${suffix || ''}${query ? `?${query}` : ''}`;
+  }
+
+  function buildFileUrlApiUrl(siteBase, serverRelativePath, suffix, extraParams) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(serverRelativePath);
+    const query = buildApiQueryString({
+      '@u': `'${escapeOData(targetPath)}'`,
+      ...(extraParams || {})
+    });
+    return `${base}/_api/web/GetFileByServerRelativeUrl(@u)${suffix || ''}${query ? `?${query}` : ''}`;
+  }
+
+  function buildFolderUrlApiUrl(siteBase, folderPath, suffix, extraParams) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(folderPath);
+    const query = buildApiQueryString({
+      '@u': `'${escapeOData(targetPath)}'`,
+      ...(extraParams || {})
+    });
+    return `${base}/_api/web/GetFolderByServerRelativeUrl(@u)${suffix || ''}${query ? `?${query}` : ''}`;
+  }
+
+  function buildFileUrlLiteralApiUrl(siteBase, serverRelativePath, suffix, extraParams) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const targetPath = escapeOData(normalizeSharePointPathCandidate(serverRelativePath));
+    const query = buildApiQueryString(extraParams || {});
+    return `${base}/_api/web/GetFileByServerRelativeUrl('${targetPath}')${suffix || ''}${query ? `?${query}` : ''}`;
+  }
+
+  function buildFolderUrlLiteralApiUrl(siteBase, folderPath, suffix, extraParams) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const targetPath = escapeOData(normalizeSharePointPathCandidate(folderPath));
+    const query = buildApiQueryString(extraParams || {});
+    return `${base}/_api/web/GetFolderByServerRelativeUrl('${targetPath}')${suffix || ''}${query ? `?${query}` : ''}`;
+  }
+
+  function buildFolderAddApiUrls(siteBase, parentPath, leafName) {
+    const safeLeaf = encodeURIComponent(decodeRepeated(String(leafName || '').trim().replace(/^\/+|\/+$/g, ''), 2)).replace(/'/g, '%27');
+    return [
+      buildFolderUrlApiUrl(siteBase, parentPath, `/Folders/add(url='${safeLeaf}')`),
+      buildFolderUrlLiteralApiUrl(siteBase, parentPath, `/Folders/add(url='${safeLeaf}')`),
+      buildFolderPathApiUrl(siteBase, parentPath, `/Folders/add(url='${safeLeaf}')`)
+    ];
+  }
+
+  function buildFileAddApiUrls(siteBase, folderPath, fileName) {
+    const safeName = decodeRepeated(String(fileName || '').trim().replace(/^\/+/, ''), 2);
+    const rawName = escapeOData(safeName);
+    const encodedName = encodeURIComponent(safeName).replace(/'/g, '%27');
+    const suffixes = [
+      `/Files/add(url='${rawName}',overwrite=true)`,
+      `/Files/add(url='${encodedName}',overwrite=true)`
+    ];
+    return suffixes.flatMap((suffix) => ([
+      buildFolderUrlApiUrl(siteBase, folderPath, suffix),
+      buildFolderUrlLiteralApiUrl(siteBase, folderPath, suffix),
+      buildFolderPathApiUrl(siteBase, folderPath, suffix)
+    ]));
+  }
+
+  function buildApiQueryString(params) {
+    return Object.entries(params || {}).reduce((parts, entry) => {
+      const key = entry[0];
+      const value = entry[1];
+      if (value === undefined || value === null || value === '') return parts;
+      parts.push(`${encodeURIComponent(String(key))}=${encodeURIComponent(String(value))}`);
+      return parts;
+    }, []).join('&');
+  }
+
+  function buildSharePointPathCacheKey(siteBase, serverRelativePath) {
+    const safeSiteBase = String(siteBase || '').trim().replace(/\/+$/, '');
+    const safePath = normalizeSharePointPathCandidate(serverRelativePath).replace(/\/+$/, '') || '/';
+    return `${safeSiteBase}|${safePath}`;
+  }
+
+  function getCachedSharePointFolderFiles(folderPath, siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(folderPath).replace(/\/+$/, '') || '/';
+    if (!siteBase || !targetPath) return null;
+    const cacheKey = buildSharePointPathCacheKey(siteBase, targetPath);
+    if (!sharePointFolderFilesCache.has(cacheKey)) return null;
+    return (sharePointFolderFilesCache.get(cacheKey) || []).map((item) => ({ ...item }));
+  }
+
+  function unwrapSharePointPayload(json) {
+    return json && json.d ? json.d : json;
+  }
+
+  function extractSharePointCollection(json, propertyName) {
+    const root = unwrapSharePointPayload(json);
+    if (!root) return [];
+    if (Array.isArray(root.results)) return root.results;
+    if (Array.isArray(root.value)) return root.value;
+    if (propertyName) {
+      const nested = root[propertyName];
+      if (nested && Array.isArray(nested.results)) return nested.results;
+      if (Array.isArray(nested)) return nested;
+    }
+    return [];
+  }
+
+  async function listSharePointFolderFiles(folderPath, siteBaseOverride, options) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(folderPath).replace(/\/+$/, '') || '/';
+    if (!siteBase || !targetPath) return [];
+    const opts = options || {};
+    const cacheKey = buildSharePointPathCacheKey(siteBase, targetPath);
+    if (!opts.refresh && sharePointFolderFilesCache.has(cacheKey)) {
+      return sharePointFolderFilesCache.get(cacheKey).map((item) => ({ ...item }));
+    }
+    const query = { '$select': 'Name,ServerRelativeUrl,ServerRelativePath', '$top': '5000' };
+    const requestUrls = [
+      buildFolderPathApiUrl(siteBase, targetPath, '/Files', query),
+      buildFolderUrlApiUrl(siteBase, targetPath, '/Files', query),
+      buildFolderUrlLiteralApiUrl(siteBase, targetPath, '/Files', query)
+    ];
+    let lastError = null;
+    for (let index = 0; index < requestUrls.length; index += 1) {
+      try {
+        const json = await spFetchJson(requestUrls[index]);
+        const items = extractSharePointCollection(json, 'Files')
+          .map((item) => {
+            const name = String(item && (item.Name || item.FileLeafRef || '') || '').trim();
+            if (!name) return null;
+            const serverRelativePath = normalizeSharePointPathCandidate(
+              item && (item.ServerRelativeUrl || item.ServerRelativePath && item.ServerRelativePath.DecodedUrl) || ''
+            ) || joinServerRelativePath(targetPath, name);
+            return { name, serverRelativePath };
+          })
+          .filter(Boolean);
+        sharePointFolderFilesCache.set(cacheKey, items);
+        return items.map((item) => ({ ...item }));
+      } catch (error) {
+        if (![400, 404, 500].includes(Number(error && error.status))) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError || new Error(`לא ניתן לקרוא את תיקיית SharePoint ${targetPath}.`);
+  }
+
+  function rememberSharePointFolderFile(siteBase, folderPath, fileName, serverRelativePath) {
+    const cacheKey = buildSharePointPathCacheKey(siteBase, folderPath);
+    if (!sharePointFolderFilesCache.has(cacheKey)) return;
+    const safeName = String(fileName || '').trim();
+    if (!safeName) return;
+    const cached = sharePointFolderFilesCache.get(cacheKey) || [];
+    const lowerName = safeName.toLowerCase();
+    if (cached.some((item) => String(item && item.name || '').trim().toLowerCase() === lowerName)) return;
+    cached.push({
+      name: safeName,
+      serverRelativePath: normalizeSharePointPathCandidate(serverRelativePath || joinServerRelativePath(folderPath, safeName))
+    });
+  }
+
+  function buildFileCopyApiUrl(siteBase, sourcePath, targetPath, mode, methodName) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const safeSource = normalizeSharePointPathCandidate(sourcePath);
+    const safeTarget = /^https?:\/\//i.test(String(targetPath || '').trim())
+      ? String(targetPath || '').trim()
+      : normalizeSharePointPathCandidate(targetPath);
+    const query = buildApiQueryString({
+      '@u': `'${escapeOData(safeSource)}'`,
+      '@v': `'${escapeOData(safeTarget)}'`
+    });
+    if (mode === 'path') {
+      return `${base}/_api/web/GetFileByServerRelativePath(decodedurl=@u)/${methodName}(strnewurl=@v,boverwrite=true)?${query}`;
+    }
+    return `${base}/_api/web/GetFileByServerRelativeUrl(@u)/${methodName}(strnewurl=@v,boverwrite=true)?${query}`;
+  }
+
+  function buildFileCopyLiteralApiUrl(siteBase, sourcePath, targetPath, methodName) {
+    const base = String(siteBase || '').trim().replace(/\/+$/, '');
+    const safeSource = escapeOData(normalizeSharePointPathCandidate(sourcePath));
+    const safeTarget = /^https?:\/\//i.test(String(targetPath || '').trim())
+      ? escapeOData(String(targetPath || '').trim())
+      : escapeOData(normalizeSharePointPathCandidate(targetPath));
+    return `${base}/_api/web/GetFileByServerRelativeUrl('${safeSource}')/${methodName}(strnewurl='${safeTarget}',boverwrite=true)`;
+  }
+
+  function stripSharePointNoiseParams(target) {
+    ['web', 'action', 'ActiveCell', 'OR', 'CID', 'e'].forEach((key) => {
+      target.searchParams.delete(key);
+      target.searchParams.delete(key.toLowerCase());
+      target.searchParams.delete(key.toUpperCase());
+    });
+    return target;
+  }
+
+  function extractFileGuidFromUrl(url) {
+    const text = String(url || '').trim();
+    if (!text) return '';
+    try {
+      const parsed = new URL(text, window.location.href);
+      const fromPath = String(parsed.pathname || '').match(/\/GetFileById\(guid'([0-9a-f-]{36})'\)\/\$value$/i);
+      if (fromPath && fromPath[1]) return String(fromPath[1]).toLowerCase();
+      const sourceDoc = String(parsed.searchParams.get('sourcedoc') || parsed.searchParams.get('SourceDoc') || '').replace(/[{}]/g, '').trim();
+      if (/^[0-9a-f-]{36}$/i.test(sourceDoc)) return sourceDoc.toLowerCase();
+    } catch (error) {}
+    return '';
+  }
+
+  function buildWorkbookCandidatesFromServerRelativePath(serverRelativePath, siteBase, origin) {
+    const out = [];
+    const seen = new Set();
+    const push = (value) => {
+      const text = String(value || '').trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      out.push(text);
+    };
+    const safeSiteBase = String(siteBase || '').trim().replace(/\/+$/, '');
+    const safeOrigin = String(origin || '').trim().replace(/\/+$/, '');
+    const directBase = safeSiteBase || safeOrigin;
+    if (!directBase) return out;
+
+    const direct = new URL(serverRelativePath, directBase);
+    stripSharePointNoiseParams(direct);
+    push(direct.toString());
+
+    const directDownload = new URL(direct.toString());
+    directDownload.searchParams.set('download', '1');
+    push(directDownload.toString());
+
+    const directBinary = new URL(direct.toString());
+    directBinary.searchParams.set('download', '1');
+    directBinary.searchParams.set('web', '0');
+    push(directBinary.toString());
+
+    if (safeSiteBase) {
+      const downloadPage = new URL(`${safeSiteBase}/_layouts/15/download.aspx`);
+      downloadPage.searchParams.set('SourceUrl', new URL(serverRelativePath, safeOrigin || safeSiteBase).toString());
+      push(downloadPage.toString());
+      push(buildFileUrlApiUrl(safeSiteBase, serverRelativePath, '/$value'));
+      push(`${safeSiteBase}/_api/web/GetFileByServerRelativeUrl('${encodeURIComponent(serverRelativePath).replace(/%2F/g, '/')}')/$value`);
+      push(buildServerRelativePathApiUrl(safeSiteBase, serverRelativePath, '/$value'));
+    } else if (safeOrigin) {
+      push(buildFileUrlApiUrl(safeOrigin, serverRelativePath, '/$value'));
+      push(`${safeOrigin}/_api/web/GetFileByServerRelativeUrl('${encodeURIComponent(serverRelativePath).replace(/%2F/g, '/')}')/$value`);
+      push(buildServerRelativePathApiUrl(safeOrigin, serverRelativePath, '/$value'));
+    }
+    return out;
+  }
+
+  function splitServerRelativePath(serverRelativePath) {
+    const clean = normalizeSharePointPathCandidate(serverRelativePath);
+    const slashIndex = clean.lastIndexOf('/');
+    if (slashIndex < 0) {
+      return { folderPath: '/', fileName: clean.replace(/^\/+/, '') };
+    }
+    return {
+      folderPath: clean.slice(0, slashIndex) || '/',
+      fileName: clean.slice(slashIndex + 1)
+    };
+  }
+
+  function buildFolderCreationPlan(folderPath) {
+    const clean = normalizeSharePointPathCandidate(folderPath).replace(/\/+$/, '') || '/';
+    if (!clean || clean === '/') return [];
+    const parts = clean.split('/').filter(Boolean);
+    const normalizedParts = parts.map(normalizePathSegmentForMatch);
+    const libraryIndex = normalizedParts.findIndex((part) => SITE_LIBRARY_MARKERS.has(part));
+    if (libraryIndex < 0 || libraryIndex >= parts.length - 1) return [];
+    return Array.from({ length: parts.length - libraryIndex - 1 }, (_, offset) => {
+      const partIndex = libraryIndex + 1 + offset;
+      return {
+        parentPath: `/${parts.slice(0, partIndex).join('/')}`,
+        folderPath: `/${parts.slice(0, partIndex + 1).join('/')}`,
+        leafName: parts[partIndex]
+      };
+    });
+  }
+
+  function joinServerRelativePath(folderPath, leafName) {
+    const folder = normalizeSharePointPathCandidate(folderPath).replace(/\/+$/, '') || '/';
+    const leaf = String(leafName || '').trim().replace(/^\/+/, '');
+    if (!leaf) return folder || '/';
+    return `${folder === '/' ? '' : folder}/${leaf}`.replace(/\/{2,}/g, '/');
+  }
+
+  function buildDateStampedFileName(fileName, dateKey) {
+    const safeDate = normalizeDateKey(dateKey) || todayKey();
+    const source = decodeRepeated(String(fileName || 'attendance.xlsx').trim() || 'attendance.xlsx', 2);
+    const extMatch = source.match(/(\.[^.]+)$/);
+    const ext = extMatch ? extMatch[1] : '.xlsx';
+    const base = source.replace(/(\.[^.]+)$/, '').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'attendance';
+    return `${base}-${safeDate}${ext}`;
+  }
+
+  async function resolveSharePointFileDescriptor(url) {
+    const sourceUrl = String(url || '').trim();
+    if (!sourceUrl) throw new Error('\u05d0\u05d9\u05df \u05e7\u05d9\u05e9\u05d5\u05e8 \u05dc\u05e7\u05d5\u05d1\u05e5 Excel.');
+    const normalized = normalizeRemoteExcelUrl(sourceUrl);
+    const siteBase = String(getSharePointSiteBaseForUrl(normalized || sourceUrl) || '').trim().replace(/\/+$/, '');
+    let parsed;
+    try {
+      parsed = new URL(normalized || sourceUrl, window.location.href);
+    } catch (error) {
+      parsed = new URL(sourceUrl, window.location.href);
+    }
+    const origin = parsed.origin || (siteBase ? new URL(siteBase, window.location.href).origin : window.location.origin);
+    try {
+      const serverRelativePath = deriveSharePointFilePath(normalized || sourceUrl);
+      const parts = splitServerRelativePath(serverRelativePath);
+      return {
+        sourceUrl,
+        normalizedUrl: normalized,
+        siteBase,
+        origin,
+        serverRelativePath,
+        folderPath: parts.folderPath,
+        fileName: parts.fileName || getWorkbookFileName(sourceUrl)
+      };
+    } catch (error) {}
+    const guid = extractFileGuidFromUrl(normalized || sourceUrl) || extractFileGuidFromUrl(sourceUrl);
+    if (guid && siteBase) {
+      const json = await spFetchJson(`${siteBase}/_api/web/GetFileById(guid'${guid}')?$select=Name,ServerRelativeUrl`);
+      const file = json && json.d ? json.d : json;
+      const serverRelativePath = normalizeSharePointPathCandidate(file && (file.ServerRelativeUrl || file.ServerRelativePath && file.ServerRelativePath.DecodedUrl) || '');
+      if (looksLikeExcelPath(serverRelativePath)) {
+        const parts = splitServerRelativePath(serverRelativePath);
+        return {
+          sourceUrl,
+          normalizedUrl: normalized,
+          siteBase,
+          origin,
+          serverRelativePath,
+          folderPath: parts.folderPath,
+          fileName: parts.fileName || String(file && file.Name || getWorkbookFileName(sourceUrl))
+        };
+      }
+    }
+    throw new Error('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d2\u05d6\u05d5\u05e8 \u05e0\u05ea\u05d9\u05d1 \u05e7\u05d5\u05d1\u05e5 Excel \u05de\u05ea\u05d5\u05da \u05d4\u05e7\u05d9\u05e9\u05d5\u05e8 \u05e9\u05e1\u05d5\u05e4\u05e7.');
+  }
+
+  async function resolveSharePointFolderDescriptor(url, fallbackFileUrl) {
+    const preferred = String(url || '').trim();
+    if (!preferred) {
+      const fallback = await resolveSharePointFileDescriptor(fallbackFileUrl);
+      return {
+        sourceUrl: fallback.sourceUrl,
+        siteBase: fallback.siteBase,
+        origin: fallback.origin,
+        serverRelativePath: fallback.folderPath
+      };
+    }
+    const siteBase = String(getSharePointSiteBaseForUrl(preferred) || '').trim().replace(/\/+$/, '');
+    if (!siteBase) throw new Error('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05e7\u05d1\u05d5\u05e2 Site URL \u05e2\u05d1\u05d5\u05e8 \u05ea\u05d9\u05e7\u05d9\u05d9\u05ea \u05e2\u05d5\u05ea\u05e7\u05d9 \u05d4\u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd.');
+    const parsed = new URL(preferred, window.location.href);
+    let serverRelativePath = extractSharePointPathFromLink(parsed);
+    if (!serverRelativePath) throw new Error('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d2\u05d6\u05d5\u05e8 \u05e0\u05ea\u05d9\u05d1 \u05ea\u05d9\u05e7\u05d9\u05d9\u05d4 \u05de\u05ea\u05d5\u05da \u05d4\u05e7\u05d9\u05e9\u05d5\u05e8 \u05e9\u05e1\u05d5\u05e4\u05e7.');
+    if (looksLikeExcelPath(serverRelativePath)) {
+      serverRelativePath = splitServerRelativePath(serverRelativePath).folderPath;
+    }
+    return {
+      sourceUrl: preferred,
+      siteBase,
+      origin: new URL(siteBase, window.location.href).origin,
+      serverRelativePath: normalizeSharePointPathCandidate(serverRelativePath).replace(/\/+$/, '') || '/'
+    };
+  }
+
+  function normalizeRemoteExcelUrl(url) {
+    const clean = String(url || '').trim();
+    if (!clean) return '';
+    let parsed;
+    try {
+      parsed = new URL(clean, window.location.href);
+    } catch (error) {
+      return clean;
+    }
+    const extractedPath = extractExcelPathFromSharePointLink(parsed);
+    if (extractedPath) {
+      try {
+        const candidate = new URL(extractedPath, getSharePointSiteBaseForUrl(clean) || parsed.origin);
+        stripSharePointNoiseParams(candidate);
+        if (!candidate.searchParams.has('download')) candidate.searchParams.set('download', '1');
+        return candidate.toString();
+      } catch (error) {}
+    }
+    const lowerPath = String(parsed.pathname || '').toLowerCase();
+    if (lowerPath.includes('/_layouts/15/wopiframe.aspx') || lowerPath.includes('/_layouts/15/doc.aspx')) {
+      const sourceDoc = String(parsed.searchParams.get('sourcedoc') || parsed.searchParams.get('SourceDoc') || '').replace(/[{}]/g, '').trim();
+      if (/^[0-9a-f-]{36}$/i.test(sourceDoc)) {
+        const siteBase = getSharePointSiteBaseForUrl(clean) || parsed.origin;
+        return `${String(siteBase).replace(/\/+$/, '')}/_api/web/GetFileById(guid'${sourceDoc}')/$value`;
+      }
+    }
+    if (lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls')) {
+      stripSharePointNoiseParams(parsed);
+      if (!parsed.searchParams.has('download')) parsed.searchParams.set('download', '1');
+      return parsed.toString();
+    }
+    return clean;
+  }
+
+  function deriveSharePointFilePath(url) {
+    const parsed = new URL(String(url || ''), window.location.href);
+    const path = extractExcelPathFromSharePointLink(parsed);
+    if (!path || !looksLikeExcelPath(path)) throw new Error('\u05e7\u05d9\u05e9\u05d5\u05e8 \u05d4\u05e7\u05d5\u05d1\u05e5 \u05d0\u05d9\u05e0\u05d5 \u05de\u05e6\u05d1\u05d9\u05e2 \u05e2\u05dc Excel \u05d9\u05e9\u05d9\u05e8.');
+    return path;
+  }
+
+  function isLikelyHtmlPayload(buffer) {
+    try {
+      const prefix = new TextDecoder('utf-8', { fatal: false }).decode(buffer.slice(0, 400)).toLowerCase();
+      return prefix.includes('<!doctype') || prefix.includes('<html') || prefix.includes('<body');
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function buildRemoteWorkbookFetchCandidates(sourceUrl, normalizedUrl) {
+    const out = [];
+    const seen = new Set();
+    const push = (value) => {
+      const text = String(value || '').trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      out.push(text);
+    };
+    push(normalizedUrl || sourceUrl);
+    let parsed;
+    try {
+      parsed = new URL(normalizedUrl || sourceUrl, window.location.href);
+    } catch (error) {
+      return out;
+    }
+    const origin = parsed.origin;
+    const siteBase = String(getSharePointSiteBaseForUrl(normalizedUrl || sourceUrl) || '').trim().replace(/\/+$/, '');
+    try {
+      const serverRelative = deriveSharePointFilePath(normalizedUrl || sourceUrl);
+      buildWorkbookCandidatesFromServerRelativePath(serverRelative, siteBase, origin).forEach(push);
+    } catch (error) {}
+    const byIdMatch = String(parsed.pathname || '').match(/\/_api\/web\/GetFileById\(guid'([0-9a-f-]{36})'\)\/\$value$/i);
+    if (byIdMatch && byIdMatch[1]) {
+      push(`${siteBase || origin}/_api/web/GetFileById(guid'${String(byIdMatch[1]).toLowerCase()}')/$value`);
+    }
+    return out;
+  }
+
+  function getWorkbookFileName(url) {
+    try {
+      const parsed = new URL(String(url || ''), window.location.href);
+      const path = extractExcelPathFromSharePointLink(parsed);
+      if (path) {
+        const parts = path.split('/').filter(Boolean);
+        if (parts.length) return decodeRepeated(parts[parts.length - 1] || 'attendance.xlsx', 2);
+      }
+      const queryName = parsed.searchParams.get('FileLeafRef') || parsed.searchParams.get('fileleafref') || parsed.searchParams.get('file') || parsed.searchParams.get('File');
+      if (queryName) return decodeRepeated(queryName, 4);
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      return decodeRepeated(parts[parts.length - 1] || 'attendance.xlsx', 2);
+    } catch (error) {
+      return 'attendance.xlsx';
+    }
+  }
+
+  async function loadWorkbookFromSharePoint(url) {
+    const sourceUrl = String(url || '').trim();
+    if (!sourceUrl) throw new Error('\u05d9\u05e9 \u05dc\u05d4\u05d2\u05d3\u05d9\u05e8 workbookUrl \u05d1\u05de\u05e1\u05da \u05d4\u05e0\u05d9\u05d4\u05d5\u05dc \u05d0\u05d5 \u05d1\u05e7\u05d5\u05d1\u05e5 attendance.config.js.');
+    const normalized = normalizeRemoteExcelUrl(sourceUrl);
+    const parsedSource = new URL(normalized || sourceUrl, window.location.href);
+    let descriptor = null;
+    try {
+      descriptor = await resolveSharePointFileDescriptor(normalized || sourceUrl);
+    } catch (error) {}
+    let candidates = buildRemoteWorkbookFetchCandidates(sourceUrl, normalized);
+    if (descriptor && descriptor.serverRelativePath && descriptor.siteBase) {
+      const resolvedCandidates = buildWorkbookCandidatesFromServerRelativePath(
+        descriptor.serverRelativePath,
+        descriptor.siteBase,
+        descriptor.origin || parsedSource.origin
+      );
+      candidates = resolvedCandidates.concat(candidates.filter((candidate) => !resolvedCandidates.includes(candidate)));
+    }
+    const guid = extractFileGuidFromUrl(normalized || sourceUrl) || extractFileGuidFromUrl(sourceUrl);
+    const siteBase = String(getSharePointSiteBaseForUrl(normalized || sourceUrl) || '').trim().replace(/\/+$/, '');
+    if ((!descriptor || !descriptor.serverRelativePath) && guid && siteBase) {
+      try {
+        const json = await spFetchJson(`${siteBase}/_api/web/GetFileById(guid'${guid}')?$select=Name,ServerRelativeUrl,ServerRelativePath`);
+        const file = json && json.d ? json.d : json;
+        const serverRelativePath = normalizeSharePointPathCandidate(file && (file.ServerRelativeUrl || file.ServerRelativePath && file.ServerRelativePath.DecodedUrl) || '');
+        if (looksLikeExcelPath(serverRelativePath)) {
+          descriptor = {
+            sourceUrl,
+            normalizedUrl: normalized,
+            siteBase,
+            origin: parsedSource.origin,
+            serverRelativePath,
+            folderPath: splitServerRelativePath(serverRelativePath).folderPath,
+            fileName: String(file && file.Name || getWorkbookFileName(sourceUrl))
+          };
+          const resolvedCandidates = buildWorkbookCandidatesFromServerRelativePath(serverRelativePath, siteBase, parsedSource.origin);
+          candidates = resolvedCandidates.concat(candidates.filter((candidate) => !resolvedCandidates.includes(candidate)));
+        }
+      } catch (error) {}
+    }
+    let lastError = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index];
+      try {
+        const response = await fetch(candidate, {
+          credentials: 'include',
+          cache: 'no-store'
+        });
+        if (!response.ok) {
+          const text = await readResponseText(response).catch(() => '');
+          lastError = buildHttpError('\u05d8\u05e2\u05d9\u05e0\u05ea \u05e7\u05d5\u05d1\u05e5 Excel \u05e0\u05db\u05e9\u05dc\u05d4', response.status, text, response.statusText);
+          continue;
+        }
+        const buffer = await response.arrayBuffer();
+        if (isLikelyHtmlPayload(buffer)) {
+          lastError = new Error('\u05d4\u05e7\u05d9\u05e9\u05d5\u05e8 \u05de\u05d7\u05d6\u05d9\u05e8 HTML \u05d1\u05de\u05e7\u05d5\u05dd \u05e7\u05d5\u05d1\u05e5 Excel.');
+          continue;
+        }
+        const workbook = XLSX.read(buffer, {
+          type: 'array',
+          cellStyles: true,
+          cellFormula: true,
+          cellNF: true,
+          codepage: 1255
+        });
+        let effectiveDescriptor = descriptor;
+        if (!effectiveDescriptor || !effectiveDescriptor.serverRelativePath || !effectiveDescriptor.siteBase) {
+          try {
+            effectiveDescriptor = await resolveSharePointFileDescriptor(sourceUrl);
+          } catch (error) {
+            try {
+              effectiveDescriptor = await resolveSharePointFileDescriptor(candidate);
+            } catch (innerError) {}
+          }
+        }
+        return {
+          workbook,
+          sourceUrl,
+          requestUrl: candidate,
+          fileName: effectiveDescriptor && effectiveDescriptor.fileName ? effectiveDescriptor.fileName : getWorkbookFileName(sourceUrl),
+          arrayBuffer: buffer.slice(0),
+          normalizedUrl: effectiveDescriptor && effectiveDescriptor.normalizedUrl ? effectiveDescriptor.normalizedUrl : normalized,
+          siteBase: effectiveDescriptor && effectiveDescriptor.siteBase ? effectiveDescriptor.siteBase : siteBase,
+          origin: effectiveDescriptor && effectiveDescriptor.origin ? effectiveDescriptor.origin : parsedSource.origin,
+          serverRelativePath: effectiveDescriptor && effectiveDescriptor.serverRelativePath ? effectiveDescriptor.serverRelativePath : '',
+          folderPath: effectiveDescriptor && effectiveDescriptor.folderPath ? effectiveDescriptor.folderPath : ''
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05e7\u05d5\u05d1\u05e5 \u05d4-Excel.');
+  }
+
+  function writeWorkbookArrayBuffer(workbook) {
+    return XLSX.write(workbook, {
+      bookType: 'xlsx',
+      type: 'array',
+      cellStyles: true
+    });
+  }
+
+  async function sharePointFileExists(serverRelativePath, siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(serverRelativePath);
+    if (!siteBase || !targetPath) return false;
+    const parts = splitServerRelativePath(targetPath);
+    if (parts.fileName) {
+      const folderFiles = getCachedSharePointFolderFiles(parts.folderPath || '/', siteBase);
+      if (folderFiles) {
+        const lowerName = String(parts.fileName || '').trim().toLowerCase();
+        return folderFiles.some((item) => String(item && item.name || '').trim().toLowerCase() === lowerName);
+      }
+    }
+    try {
+      const response = await fetch(new URL(targetPath, siteBase || window.location.href).toString(), {
+        method: 'HEAD',
+        credentials: 'include'
+      });
+      if (response.ok) return true;
+      if (response.status === 404) return false;
+    } catch (error) {}
+    try {
+      await spFetchJson(buildFileUrlApiUrl(siteBase, targetPath, '', { '$select': 'Name,ServerRelativeUrl' }));
+      return true;
+    } catch (error) {
+      if (![400, 404, 500].includes(Number(error && error.status))) throw error;
+    }
+    try {
+      await spFetchJson(buildFileUrlLiteralApiUrl(siteBase, targetPath, '', { '$select': 'Name,ServerRelativeUrl' }));
+      return true;
+    } catch (error) {
+      if (![400, 404, 500].includes(Number(error && error.status))) throw error;
+    }
+    try {
+      await spFetchJson(buildServerRelativePathApiUrl(siteBase, targetPath, '', { '$select': 'Name,ServerRelativeUrl' }));
+      return true;
+    } catch (error) {
+      if ([400, 404, 500].includes(Number(error && error.status))) return false;
+      throw error;
+    }
+  }
+
+  async function sharePointFolderExists(folderPath, siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(folderPath).replace(/\/+$/, '') || '/';
+    if (!siteBase || !targetPath) return false;
+    try {
+      await spFetchJson(buildFolderUrlApiUrl(siteBase, targetPath, '', { '$select': 'Name,ServerRelativeUrl' }));
+      return true;
+    } catch (error) {
+      if (![400, 404, 500].includes(Number(error && error.status))) throw error;
+    }
+    try {
+      await spFetchJson(buildFolderUrlLiteralApiUrl(siteBase, targetPath, '', { '$select': 'Name,ServerRelativeUrl' }));
+      return true;
+    } catch (error) {
+      if (![400, 404, 500].includes(Number(error && error.status))) throw error;
+    }
+    try {
+      await spFetchJson(buildFolderPathApiUrl(siteBase, targetPath, '', { '$select': 'Name,ServerRelativeUrl' }));
+      return true;
+    } catch (error) {
+      if ([400, 404, 500].includes(Number(error && error.status))) return false;
+      throw error;
+    }
+  }
+
+  async function createSharePointFolder(parentPath, leafName, siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const safeParent = normalizeSharePointPathCandidate(parentPath).replace(/\/+$/, '') || '/';
+    const safeLeaf = decodeRepeated(String(leafName || '').trim().replace(/^\/+|\/+$/g, ''), 2);
+    if (!siteBase || !safeLeaf) throw new Error('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d9\u05e6\u05d5\u05e8 \u05ea\u05d9\u05e7\u05d9\u05d9\u05ea SharePoint.');
+    const digest = await getRequestDigest(siteBase);
+    const requestUrls = buildFolderAddApiUrls(siteBase, safeParent, safeLeaf);
+    let lastError = null;
+    for (let index = 0; index < requestUrls.length; index += 1) {
+      const response = await fetch(requestUrls[index], {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json;odata=verbose',
+          'X-RequestDigest': digest
+        }
+      });
+      if (response.ok) return true;
+      const text = await readResponseText(response).catch(() => '');
+      if (response.status === 409 || /already exists|exist|\u05e7\u05d9\u05d9/i.test(String(text || ''))) return true;
+      lastError = buildHttpError('\u05d9\u05e6\u05d9\u05e8\u05ea \u05ea\u05d9\u05e7\u05d9\u05d9\u05ea SharePoint \u05e0\u05db\u05e9\u05dc\u05d4', response.status, text, response.statusText);
+    }
+    throw lastError || new Error('\u05d9\u05e6\u05d9\u05e8\u05ea \u05ea\u05d9\u05e7\u05d9\u05d9\u05ea SharePoint \u05e0\u05db\u05e9\u05dc\u05d4.');
+  }
+
+  async function ensureSharePointFolderPath(folderPath, siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(folderPath).replace(/\/+$/, '') || '/';
+    if (!siteBase || !targetPath || targetPath === '/') return targetPath;
+    if (await sharePointFolderExists(targetPath, siteBase)) return targetPath;
+    const creationPlan = buildFolderCreationPlan(targetPath);
+    if (!creationPlan.length) {
+      throw new Error(`\u05ea\u05d9\u05e7\u05d9\u05d9\u05ea \u05d4\u05d9\u05e2\u05d3 \u05d1-SharePoint \u05d0\u05d9\u05e0\u05d4 \u05e7\u05d9\u05d9\u05de\u05ea: ${targetPath}`);
+    }
+    for (let index = 0; index < creationPlan.length; index += 1) {
+      const step = creationPlan[index];
+      if (await sharePointFolderExists(step.folderPath, siteBase)) continue;
+      await createSharePointFolder(step.parentPath, step.leafName, siteBase);
+    }
+    if (!await sharePointFolderExists(targetPath, siteBase)) {
+      throw new Error(`\u05ea\u05d9\u05e7\u05d9\u05d9\u05ea \u05d4\u05d9\u05e2\u05d3 \u05d1-SharePoint \u05d0\u05d9\u05e0\u05d4 \u05e0\u05d9\u05ea\u05e0\u05ea \u05dc\u05d9\u05e6\u05d9\u05e8\u05d4: ${targetPath}`);
+    }
+    return targetPath;
+  }
+
+  async function copySharePointFile(sourceServerRelativePath, targetServerRelativePath, siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const sourcePath = normalizeSharePointPathCandidate(sourceServerRelativePath);
+    const targetPath = normalizeSharePointPathCandidate(targetServerRelativePath);
+    if (!siteBase || !sourcePath || !targetPath) throw new Error('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d1\u05e6\u05e2 \u05d4\u05e2\u05ea\u05e7\u05ea \u05e7\u05d5\u05d1\u05e5 \u05d1-SharePoint.');
+    const digest = await getRequestDigest(siteBase);
+    const absoluteTargetUrl = new URL(targetPath, siteBase || window.location.href).toString();
+    const requestUrls = [
+      buildFileCopyApiUrl(siteBase, sourcePath, targetPath, 'url', 'copyto'),
+      buildFileCopyApiUrl(siteBase, sourcePath, absoluteTargetUrl, 'url', 'copyto'),
+      buildFileCopyApiUrl(siteBase, sourcePath, targetPath, 'url', 'copyTo'),
+      buildFileCopyApiUrl(siteBase, sourcePath, absoluteTargetUrl, 'url', 'copyTo'),
+      buildFileCopyLiteralApiUrl(siteBase, sourcePath, targetPath, 'copyto'),
+      buildFileCopyLiteralApiUrl(siteBase, sourcePath, absoluteTargetUrl, 'copyto'),
+      buildFileCopyLiteralApiUrl(siteBase, sourcePath, targetPath, 'copyTo'),
+      buildFileCopyLiteralApiUrl(siteBase, sourcePath, absoluteTargetUrl, 'copyTo'),
+      buildFileCopyApiUrl(siteBase, sourcePath, targetPath, 'path', 'copyto'),
+      buildFileCopyApiUrl(siteBase, sourcePath, absoluteTargetUrl, 'path', 'copyto'),
+      buildFileCopyApiUrl(siteBase, sourcePath, targetPath, 'path', 'copyTo'),
+      buildFileCopyApiUrl(siteBase, sourcePath, absoluteTargetUrl, 'path', 'copyTo')
+    ];
+    let lastError = null;
+    for (let index = 0; index < requestUrls.length; index += 1) {
+      const response = await fetch(requestUrls[index], {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json;odata=verbose',
+          'X-RequestDigest': digest
+        }
+      });
+      if (response.ok) {
+        const targetParts = splitServerRelativePath(targetPath);
+        rememberSharePointFolderFile(siteBase, targetParts.folderPath || '/', targetParts.fileName, targetPath);
+        return true;
+      }
+      const text = await readResponseText(response).catch(() => '');
+      lastError = buildHttpError('\u05d4\u05e2\u05ea\u05e7\u05ea \u05e7\u05d5\u05d1\u05e5 \u05e0\u05db\u05e9\u05dc\u05d4', response.status, text, response.statusText);
+    }
+    throw lastError || new Error('\u05d4\u05e2\u05ea\u05e7\u05ea \u05e7\u05d5\u05d1\u05e5 \u05e0\u05db\u05e9\u05dc\u05d4.');
+  }
+
+  async function saveArrayBufferToSharePointPath(serverRelativePath, data, siteBaseOverride) {
+    const siteBase = String(siteBaseOverride || getSiteBaseUrl() || '').trim().replace(/\/+$/, '');
+    const targetPath = normalizeSharePointPathCandidate(serverRelativePath);
+    if (!siteBase || !targetPath) throw new Error('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05e7\u05d1\u05d5\u05e2 \u05d9\u05e2\u05d3 \u05e7\u05d5\u05d1\u05e5 \u05d1-SharePoint.');
+    const parts = splitServerRelativePath(targetPath);
+    if (!parts.fileName) throw new Error('\u05e9\u05dd \u05d4\u05e7\u05d5\u05d1\u05e5 \u05dc\u05e9\u05de\u05d9\u05e8\u05d4 \u05d7\u05e1\u05e8.');
+    await ensureSharePointFolderPath(parts.folderPath || '/', siteBase);
+    const digest = await getRequestDigest(siteBase);
+    const requestUrls = buildFileAddApiUrls(siteBase, parts.folderPath || '/', parts.fileName);
+    let lastError = null;
+    for (let index = 0; index < requestUrls.length; index += 1) {
+      const response = await fetch(requestUrls[index], {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json;odata=verbose',
+          'Content-Type': 'application/octet-stream',
+          'X-RequestDigest': digest
+        },
+        body: data
+      });
+      if (response.ok) {
+        rememberSharePointFolderFile(siteBase, parts.folderPath || '/', parts.fileName, targetPath);
+        return true;
+      }
+      const text = await readResponseText(response).catch(() => '');
+      lastError = buildHttpError('\u05e9\u05de\u05d9\u05e8\u05d4 \u05dc-SharePoint \u05e0\u05db\u05e9\u05dc\u05d4', response.status, text, response.statusText);
+    }
+    throw lastError || new Error('\u05e9\u05de\u05d9\u05e8\u05d4 \u05dc-SharePoint \u05e0\u05db\u05e9\u05dc\u05d4.');
+  }
+
+  async function resolveWorkbookTargetDescriptor(target) {
+    if (target && typeof target === 'object') {
+      const siteBase = String(target.siteBase || '').trim().replace(/\/+$/, '');
+      const serverRelativePath = normalizeSharePointPathCandidate(target.serverRelativePath || '');
+      if (siteBase && serverRelativePath) {
+        const parts = splitServerRelativePath(serverRelativePath);
+        const origin = String(target.origin || '').trim() || new URL(siteBase, window.location.href).origin;
+        return {
+          sourceUrl: String(target.sourceUrl || target.requestUrl || new URL(serverRelativePath, siteBase || window.location.href).toString()),
+          normalizedUrl: String(target.normalizedUrl || ''),
+          siteBase,
+          origin,
+          serverRelativePath,
+          folderPath: parts.folderPath,
+          fileName: parts.fileName || String(target.fileName || getWorkbookFileName(target.sourceUrl || target.requestUrl || ''))
+        };
+      }
+      const fallbackUrl = String(target.sourceUrl || target.requestUrl || '').trim();
+      if (fallbackUrl) return resolveSharePointFileDescriptor(fallbackUrl);
+    }
+    return resolveSharePointFileDescriptor(target);
+  }
+
+  async function resolveWorkbookCopyFolderCandidates(masterFile, settings) {
+    const folderCandidates = [];
+    const seenFolders = new Set();
+    let preferredFolderError = null;
+    const pushFolderCandidate = (folder, isFallback) => {
+      if (!folder) return;
+      const siteBase = String(folder.siteBase || masterFile.siteBase || '').trim().replace(/\/+$/, '');
+      const serverRelativePath = normalizeSharePointPathCandidate(folder.serverRelativePath).replace(/\/+$/, '') || '/';
+      const key = `${siteBase}|${serverRelativePath}`;
+      if (!siteBase || seenFolders.has(key)) return;
+      seenFolders.add(key);
+      folderCandidates.push({
+        sourceUrl: folder.sourceUrl || '',
+        origin: folder.origin || '',
+        siteBase,
+        serverRelativePath,
+        isFallback: !!isFallback
+      });
+    };
+
+    if (settings && settings.workbookCopyFolderUrlOverride) {
+      try {
+        pushFolderCandidate(await resolveSharePointFolderDescriptor(settings.workbookCopyFolderUrlOverride, masterFile.sourceUrl), false);
+      } catch (error) {
+        preferredFolderError = error;
+      }
+    }
+
+    pushFolderCandidate({
+      sourceUrl: masterFile.sourceUrl,
+      origin: masterFile.origin,
+      siteBase: masterFile.siteBase,
+      serverRelativePath: masterFile.folderPath
+    }, true);
+
+    return {
+      folderCandidates,
+      preferredFolderError
+    };
+  }
+
+  async function findExistingWorkbookCopyForDate(target, settings, dateKey) {
+    const safeDate = normalizeDateKey(dateKey);
+    if (!safeDate) return null;
+    const masterFile = await resolveWorkbookTargetDescriptor(target);
+    const targetFileName = buildDateStampedFileName(masterFile.fileName, safeDate);
+    const { folderCandidates } = await resolveWorkbookCopyFolderCandidates(masterFile, settings);
+    for (let index = 0; index < folderCandidates.length; index += 1) {
+      const folder = folderCandidates[index];
+      const targetPath = joinServerRelativePath(folder.serverRelativePath, targetFileName);
+      if (await sharePointFileExists(targetPath, folder.siteBase)) {
+        return {
+          isDateCopy: true,
+          created: false,
+          siteBase: folder.siteBase,
+          serverRelativePath: targetPath,
+          url: new URL(targetPath, folder.siteBase || window.location.href).toString(),
+          fileName: targetFileName,
+          fallbackUsed: !!folder.isFallback
+        };
+      }
+    }
+    return null;
+  }
+
+  async function ensureWorkbookCopyForDate(sourceWorkbookInfo, settings, dateKey) {
+    const safeDate = normalizeDateKey(dateKey);
+    const masterFile = await resolveWorkbookTargetDescriptor(sourceWorkbookInfo && (sourceWorkbookInfo.serverRelativePath || sourceWorkbookInfo.sourceUrl || sourceWorkbookInfo.requestUrl) ? sourceWorkbookInfo : resolveWorkbookUrl(settings));
+    if (!safeDate) {
+      return {
+        isDateCopy: false,
+        created: false,
+        siteBase: masterFile.siteBase,
+        serverRelativePath: masterFile.serverRelativePath,
+        url: masterFile.sourceUrl,
+        fileName: masterFile.fileName,
+        fallbackUsed: false
+      };
+    }
+    const targetFileName = buildDateStampedFileName(masterFile.fileName || sourceWorkbookInfo && sourceWorkbookInfo.fileName, safeDate);
+    const { folderCandidates, preferredFolderError } = await resolveWorkbookCopyFolderCandidates(masterFile, settings);
+
+    const bytes = sourceWorkbookInfo && sourceWorkbookInfo.arrayBuffer
+      ? sourceWorkbookInfo.arrayBuffer.slice(0)
+      : writeWorkbookArrayBuffer(sourceWorkbookInfo.workbook);
+    let lastError = preferredFolderError;
+
+    for (let index = 0; index < folderCandidates.length; index += 1) {
+      const folder = folderCandidates[index];
+      const targetPath = joinServerRelativePath(folder.serverRelativePath, targetFileName);
+      try {
+        const exists = await sharePointFileExists(targetPath, folder.siteBase);
+        if (!exists) {
+          try {
+            await saveArrayBufferToSharePointPath(targetPath, bytes, folder.siteBase);
+          } catch (uploadError) {
+            await copySharePointFile(masterFile.serverRelativePath, targetPath, folder.siteBase).catch((copyError) => {
+              throw uploadError && uploadError.message ? uploadError : copyError;
+            });
+          }
+        }
+        return {
+          isDateCopy: true,
+          created: !exists,
+          siteBase: folder.siteBase,
+          serverRelativePath: targetPath,
+          url: new URL(targetPath, folder.siteBase || window.location.href).toString(),
+          fileName: targetFileName,
+          fallbackUsed: !!folder.isFallback
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError || new Error('\u05d9\u05e6\u05d9\u05e8\u05ea \u05e2\u05d5\u05ea\u05e7 \u05ea\u05d0\u05e8\u05d9\u05da \u05e0\u05db\u05e9\u05dc\u05d4.');
+  }
+
+  async function ensureWorkbookCopiesForDates(settings, dateKeys) {
+    const dates = normalizeOpenDates(dateKeys || []);
+    if (!dates.length) {
+      return {
+        created: [],
+        existing: [],
+        failed: []
+      };
+    }
+    if (!hasWorkbookSource(settings)) {
+      return {
+        created: [],
+        existing: [],
+        failed: []
+      };
+    }
+    const masterInfo = await loadWorkbookFromSharePoint(resolveWorkbookUrl(settings));
+    const result = {
+      created: [],
+      existing: [],
+      failed: []
+    };
+    for (let index = 0; index < dates.length; index += 1) {
+      const dateKey = dates[index];
+      try {
+        const copyInfo = await ensureWorkbookCopyForDate(masterInfo, settings, dateKey);
+        if (copyInfo && copyInfo.created) result.created.push(dateKey);
+        else result.existing.push(dateKey);
+      } catch (error) {
+        result.failed.push({
+          dateKey,
+          message: String(error && error.message ? error.message : error)
+        });
+      }
+    }
+    return result;
+  }
+
+  async function prepareWorkbookForAttendance(settings, dateKey) {
+    const safeDate = normalizeDateKey(dateKey);
+    if (safeDate) {
+      try {
+        const masterTarget = await resolveWorkbookTargetDescriptor(resolveWorkbookUrl(settings));
+        const existingCopy = await findExistingWorkbookCopyForDate(masterTarget, settings, safeDate);
+        if (existingCopy && existingCopy.url) {
+          const activeInfo = await loadWorkbookFromSharePoint(existingCopy.url);
+          activeInfo.sourceUrl = existingCopy.url;
+          activeInfo.requestUrl = existingCopy.url;
+          activeInfo.fileName = existingCopy.fileName;
+          return {
+            activeInfo,
+            masterInfo: masterTarget,
+            copyInfo: existingCopy
+          };
+        }
+      } catch (error) {}
+    }
+    const masterInfo = await loadWorkbookFromSharePoint(resolveWorkbookUrl(settings));
+    let copyInfo;
+    try {
+      copyInfo = await ensureWorkbookCopyForDate(masterInfo, settings, dateKey);
+    } catch (error) {
+      throw new Error(`\u05d9\u05e6\u05d9\u05e8\u05ea \u05e2\u05d5\u05ea\u05e7 \u05d4\u05ea\u05d0\u05e8\u05d9\u05da \u05e0\u05db\u05e9\u05dc\u05d4: ${String(error && error.message ? error.message : error)}`);
+    }
+    if (!copyInfo.isDateCopy) {
+      return {
+        activeInfo: masterInfo,
+        masterInfo,
+        copyInfo
+      };
+    }
+    if (copyInfo.created) {
+      return {
+        activeInfo: {
+          ...masterInfo,
+          sourceUrl: copyInfo.url,
+          requestUrl: copyInfo.url,
+          fileName: copyInfo.fileName
+        },
+        masterInfo,
+        copyInfo
+      };
+    }
+    const activeInfo = await loadWorkbookFromSharePoint(copyInfo.url);
+    activeInfo.sourceUrl = copyInfo.url;
+    activeInfo.requestUrl = copyInfo.url;
+    activeInfo.fileName = copyInfo.fileName;
+    return {
+      activeInfo,
+      masterInfo,
+      copyInfo
+    };
+  }
+
+  async function saveWorkbookToSharePoint(target, workbook) {
+    const descriptor = await resolveWorkbookTargetDescriptor(target);
+    const data = writeWorkbookArrayBuffer(workbook);
+    return saveArrayBufferToSharePointPath(descriptor.serverRelativePath, data, descriptor.siteBase);
+  }
+
+  function getWorksheet(workbook, sheetName) {
+    if (!workbook || !workbook.Sheets) return null;
+    return workbook.Sheets[String(sheetName || '')] || null;
+  }
+
+  function ensureWorksheet(workbook, sheetName) {
+    const safeName = String(sheetName || '').trim();
+    if (!safeName) throw new Error('\u05d7\u05e1\u05e8 \u05e9\u05dd \u05d2\u05d9\u05dc\u05d9\u05d5\u05df.');
+    if (!workbook.Sheets) workbook.Sheets = {};
+    if (!Array.isArray(workbook.SheetNames)) workbook.SheetNames = [];
+    if (!workbook.Sheets[safeName]) {
+      workbook.Sheets[safeName] = XLSX.utils.aoa_to_sheet([]);
+      workbook.SheetNames.push(safeName);
+    }
+    if (!workbook.SheetNames.includes(safeName)) workbook.SheetNames.push(safeName);
+    return workbook.Sheets[safeName];
+  }
+
+  function worksheetToMatrix(worksheet, minColumns) {
+    if (!worksheet || !worksheet['!ref']) return [];
+    const range = XLSX.utils.decode_range(worksheet['!ref']);
+    const width = Math.max(Number(minColumns || 0), range.e.c + 1);
+    const rows = [];
+    for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+      const row = [];
+      for (let colIndex = 0; colIndex < width; colIndex += 1) {
+        const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: colIndex })];
+        if (!cell) {
+          row.push('');
+        } else if (typeof cell.v === 'string') {
+          row.push(normalizeCell(cell.v));
+        } else {
+          row.push(normalizeCell(cell.w !== undefined ? cell.w : cell.v));
+        }
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  function getSheetMatrix(workbook, sheetName, minColumns) {
+    return worksheetToMatrix(getWorksheet(workbook, sheetName), minColumns);
+  }
+
+  function writeRowsToSheet(workbook, sheetName, rows, origin) {
+    const worksheet = ensureWorksheet(workbook, sheetName);
+    XLSX.utils.sheet_add_aoa(worksheet, rows, { origin: origin || { r: 0, c: 0 } });
+    return worksheet;
+  }
+
+  function clearSheetAndWrite(workbook, sheetName, rows) {
+    const worksheet = XLSX.utils.aoa_to_sheet(rows || []);
+    workbook.Sheets[String(sheetName || '')] = worksheet;
+    if (!Array.isArray(workbook.SheetNames)) workbook.SheetNames = [];
+    if (!workbook.SheetNames.includes(String(sheetName || ''))) workbook.SheetNames.push(String(sheetName || ''));
+    return worksheet;
+  }
+
+  function getSheetLastRow(workbook, sheetName) {
+    const worksheet = getWorksheet(workbook, sheetName);
+    if (!worksheet || !worksheet['!ref']) return 0;
+    const range = XLSX.utils.decode_range(worksheet['!ref']);
+    return range.e.r + 1;
+  }
+
+  function buildHeadersFromMatrix(matrix, columnCount) {
+    const width = Number(columnCount || 16);
+    const firstRow = Array.isArray(matrix) && matrix[0] ? matrix[0] : [];
+    const out = [];
+    for (let index = 0; index < width; index += 1) {
+      out.push(String(firstRow[index] || '').trim() || indexToColumnLetter(index));
+    }
+    return out;
+  }
+
+  function extractColumnOptions(matrix, columnLetter) {
+    const columnIndex = columnLetterToIndex(columnLetter);
+    if (columnIndex < 0) return [];
+    const values = [];
+    for (let rowIndex = 1; rowIndex < (matrix || []).length; rowIndex += 1) {
+      const row = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const value = String(row[columnIndex] || '').trim();
+      if (value) values.push(value);
+    }
+    return uniqueSorted(values);
+  }
+
+  function listFieldNames(columnCount) {
+    return Array.from({ length: Number(columnCount || 16) }, (_, index) => `Col${indexToColumnLetter(index)}`);
+  }
+
+  function recordToCells(record, columnCountOverride) {
+    const config = getStaticConfig();
+    const columnCount = Math.max(1, Number(columnCountOverride || config.workbook.columnCount || 16));
+    const snapshot = normalizeCell(record && record.JsonSnapshot ? record.JsonSnapshot : '');
+    if (snapshot) {
+      try {
+        const parsed = JSON.parse(snapshot);
+        if (parsed && Array.isArray(parsed.cells)) {
+          const cellsFromSnapshot = parsed.cells.slice(0, columnCount).map((value) => String(value || ''));
+          while (cellsFromSnapshot.length < columnCount) cellsFromSnapshot.push('');
+          return cellsFromSnapshot;
+        }
+      } catch (error) {}
+    }
+    const cells = Array.from({ length: columnCount }, () => '');
+    listFieldNames(columnCount).forEach((fieldName, index) => {
+      cells[index] = String(record && record[fieldName] ? record[fieldName] : '');
+    });
+    return cells;
+  }
+
+  function buildAttendanceListFields(headers, columnCount) {
+    return [
+      { internalName: 'AttendanceDate', schemaXml: "<Field Type='DateTime' Name='AttendanceDate' DisplayName='AttendanceDate' Format='DateOnly' />" },
+      { internalName: 'DateKey', schemaXml: "<Field Type='Text' Name='DateKey' DisplayName='DateKey' MaxLength='16' />" },
+      { internalName: 'PersonKey', schemaXml: "<Field Type='Text' Name='PersonKey' DisplayName='PersonKey' MaxLength='255' />" },
+      { internalName: 'ExcelRowNumber', schemaXml: "<Field Type='Number' Name='ExcelRowNumber' DisplayName='ExcelRowNumber' Decimals='0' />" },
+      { internalName: 'UnitName', schemaXml: "<Field Type='Text' Name='UnitName' DisplayName='UnitName' MaxLength='255' />" },
+      { internalName: 'EditedByName', schemaXml: "<Field Type='Text' Name='EditedByName' DisplayName='EditedByName' MaxLength='255' />" },
+      { internalName: 'EditedByLogin', schemaXml: "<Field Type='Text' Name='EditedByLogin' DisplayName='EditedByLogin' MaxLength='255' />" },
+      { internalName: 'EditedAt', schemaXml: "<Field Type='DateTime' Name='EditedAt' DisplayName='EditedAt' />" },
+      { internalName: 'IsAdminEdit', schemaXml: "<Field Type='Boolean' Name='IsAdminEdit' DisplayName='IsAdminEdit' />" },
+      { internalName: 'WorkbookUrl', schemaXml: "<Field Type='Note' Name='WorkbookUrl' DisplayName='WorkbookUrl' NumLines='4' RichText='FALSE' AppendOnly='FALSE' />" },
+      { internalName: 'JsonSnapshot', schemaXml: "<Field Type='Note' Name='JsonSnapshot' DisplayName='JsonSnapshot' NumLines='20' RichText='FALSE' AppendOnly='FALSE' />" }
+    ];
+  }
+
+  function buildSourceListFields(headers, columnCount) {
+    return [
+      { internalName: 'PersonKey', schemaXml: "<Field Type='Text' Name='PersonKey' DisplayName='PersonKey' MaxLength='255' />" },
+      { internalName: 'ExcelRowNumber', schemaXml: "<Field Type='Number' Name='ExcelRowNumber' DisplayName='ExcelRowNumber' Decimals='0' />" },
+      { internalName: 'UnitName', schemaXml: "<Field Type='Text' Name='UnitName' DisplayName='UnitName' MaxLength='255' />" },
+      { internalName: 'SourceFileName', schemaXml: "<Field Type='Text' Name='SourceFileName' DisplayName='SourceFileName' MaxLength='255' />" },
+      { internalName: 'ImportedAt', schemaXml: "<Field Type='DateTime' Name='ImportedAt' DisplayName='ImportedAt' Format='DateTime' FriendlyDisplayFormat='Disabled' />" },
+      { internalName: 'ImportedByName', schemaXml: "<Field Type='Text' Name='ImportedByName' DisplayName='ImportedByName' MaxLength='255' />" },
+      { internalName: 'ImportedByLogin', schemaXml: "<Field Type='Text' Name='ImportedByLogin' DisplayName='ImportedByLogin' MaxLength='255' />" },
+      { internalName: 'JsonSnapshot', schemaXml: "<Field Type='Note' Name='JsonSnapshot' DisplayName='JsonSnapshot' NumLines='20' RichText='FALSE' AppendOnly='FALSE' />" }
+    ];
+  }
+
+  function readLocalFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error('קריאת הקובץ נכשלה.'));
+      reader.onload = () => resolve(reader.result);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function scoreDecodedImportText(text) {
+    const safeText = String(text || '');
+    const replacementCount = (safeText.match(/\uFFFD/g) || []).length;
+    const controlCount = (safeText.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
+    return safeText.length - (replacementCount * 8) - (controlCount * 4);
+  }
+
+  function decodeImportedTextBuffer(buffer) {
+    const bytes = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(0);
+    const decoders = ['utf-8', 'windows-1255'];
+    let best = '';
+    let bestScore = -Infinity;
+    for (let index = 0; index < decoders.length; index += 1) {
+      try {
+        const text = new TextDecoder(decoders[index]).decode(bytes);
+        const score = scoreDecodedImportText(text);
+        if (score > bestScore) {
+          best = text;
+          bestScore = score;
+        }
+      } catch (error) {}
+    }
+    return best;
+  }
+
+  function detectDelimitedImportSeparator(text) {
+    const sampleLines = String(text || '')
+      .split(/\r\n|\n|\r/)
+      .map((line) => String(line || '').trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    const candidates = ['\t', ',', ';', '|'];
+    let bestSeparator = '\t';
+    let bestScore = -1;
+    candidates.forEach((separator) => {
+      const counts = sampleLines.map((line) => line.split(separator).length - 1).filter((count) => count > 0);
+      if (!counts.length) return;
+      const average = counts.reduce((sum, count) => sum + count, 0) / counts.length;
+      const consistency = counts.length / Math.max(1, sampleLines.length);
+      const score = (average * 10) + consistency;
+      if (score > bestScore) {
+        bestSeparator = separator;
+        bestScore = score;
+      }
+    });
+    return bestScore >= 0 ? bestSeparator : (String(text || '').includes('\t') ? '\t' : ',');
+  }
+
+  function parseDelimitedImportLine(line, separator) {
+    const safeLine = String(line || '');
+    const safeSeparator = String(separator || ',') || ',';
+    const cells = [];
+    let current = '';
+    let quoted = false;
+    for (let index = 0; index < safeLine.length; index += 1) {
+      const char = safeLine[index];
+      const next = safeLine[index + 1];
+      if (char === '"') {
+        if (quoted && next === '"') {
+          current += '"';
+          index += 1;
+          continue;
+        }
+        quoted = !quoted;
+        continue;
+      }
+      if (!quoted && char === safeSeparator) {
+        cells.push(current);
+        current = '';
+        continue;
+      }
+      current += char;
+    }
+    cells.push(current);
+    return cells.map((cell) => String(cell || '').replace(/\r/g, ''));
+  }
+
+  function matrixFromDelimitedImportText(text, columnCount, separatorOverride) {
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    const safeText = String(text || '').replace(/^\uFEFF/, '');
+    const separator = separatorOverride || detectDelimitedImportSeparator(safeText);
+    return safeText
+      .split(/\r\n|\n|\r/)
+      .map((line) => parseDelimitedImportLine(line, separator))
+      .filter((cells) => Array.isArray(cells) && cells.some((cell) => String(cell || '').trim()))
+      .map((cells) => {
+        const next = Array.from({ length: safeColumnCount }, (_, index) => String(cells[index] || ''));
+        return next;
+      });
+  }
+
+  function resolveSourceImportSheetName(workbook) {
+    const preferred = String(getStaticConfig().workbook.mainSheet || '').trim();
+    if (preferred && Array.isArray(workbook && workbook.SheetNames) && workbook.SheetNames.includes(preferred)) {
+      return preferred;
+    }
+    return Array.isArray(workbook && workbook.SheetNames) && workbook.SheetNames.length
+      ? String(workbook.SheetNames[0] || '')
+      : '';
+  }
+
+  async function loadSourceImportMatrix(file, columnCount) {
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    if (!(file instanceof Blob)) throw new Error('לא נבחר קובץ לייבוא.');
+    const fileName = String(file && file.name ? file.name : '').trim().toLowerCase();
+    const buffer = await readLocalFileAsArrayBuffer(file);
+    if (/\.(csv|txt|tsv)$/i.test(fileName)) {
+      const explicitSeparator = /\.tsv$/i.test(fileName) ? '\t' : '';
+      return matrixFromDelimitedImportText(decodeImportedTextBuffer(buffer), safeColumnCount, explicitSeparator);
+    }
+    if (typeof XLSX === 'undefined') {
+      throw new Error('ספריית הייבוא XLSX אינה זמינה.');
+    }
+    const workbook = XLSX.read(buffer, {
+      type: 'array',
+      cellStyles: true,
+      cellFormula: true,
+      cellNF: true,
+      raw: false,
+      codepage: 1255
+    });
+    const sheetName = resolveSourceImportSheetName(workbook);
+    if (!sheetName) throw new Error('הקובץ לא מכיל גיליון נתונים.');
+    return getSheetMatrix(workbook, sheetName, safeColumnCount);
+  }
+
+  function buildSourceImportHeaders(matrix, columnCount) {
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    return Array.from({ length: safeColumnCount }, (_, index) => {
+      return String((matrix[0] && matrix[0][index]) || '').trim() || indexToColumnLetter(index);
+    });
+  }
+
+  function buildSourceImportRecords(matrix, columnCount) {
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    const personIdColumn = columnLetterToIndex('C');
+    const unitColumn = columnLetterToIndex('A');
+    const records = [];
+    for (let rowIndex = 1; rowIndex < (matrix || []).length; rowIndex += 1) {
+      const source = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const cells = Array.from({ length: safeColumnCount }, (_, colIndex) => String(source[colIndex] || ''));
+      if (!cells.some((value) => String(value || '').trim())) continue;
+      const excelRow = rowIndex + 1;
+      const personId = String(cells[personIdColumn] || '').trim();
+      records.push({
+        rowKey: personId ? `${personId}|${excelRow}` : `row|${excelRow}`,
+        excelRow,
+        unitName: String(cells[unitColumn] || '').trim(),
+        cells
+      });
+    }
+    return records;
+  }
+
+  async function importSourceRecordsFromFile(file, options) {
+    const safeOptions = options && typeof options === 'object' ? options : {};
+    const safeColumnCount = Math.max(1, Number(safeOptions.columnCount || getStaticConfig().workbook.columnCount || 16));
+    const currentUser = safeOptions.currentUser && typeof safeOptions.currentUser === 'object'
+      ? safeOptions.currentUser
+      : await getCurrentUser();
+    const matrix = await loadSourceImportMatrix(file, safeColumnCount);
+    if (!matrix.length) throw new Error('הקובץ שנבחר ריק או שלא הצלחנו לזהות בו שורות נתונים.');
+    const headers = buildSourceImportHeaders(matrix, safeColumnCount);
+    const records = buildSourceImportRecords(matrix, safeColumnCount);
+    if (!records.length) throw new Error('לא נמצאו שורות נתונים לייבוא למאגר הראשי.');
+    const replaceResult = await replaceSourceRecords(records, {
+      headers,
+      columnCount: safeColumnCount,
+      currentUser,
+      sourceFileName: String(file && file.name ? file.name : '').trim()
+    });
+    const baseSettings = normalizeSettings({
+      ...(safeOptions.settings || createDefaultSettings()),
+      workbookUrlOverride: '',
+      phonebookWorkbookUrlOverride: '',
+      workbookCopyFolderUrlOverride: '',
+      chatListTitleOverride: '',
+      operationsLogListTitleOverride: '',
+      casualtyListTitleOverride: ''
+    });
+    const settingsResult = await saveManagementSettings({
+      ...baseSettings,
+      sourceHeaders: headers
+    });
+    const nextSettings = settingsResult && settingsResult.settings
+      ? settingsResult.settings
+      : normalizeSettings({ ...baseSettings, sourceHeaders: headers });
+    const seededDates = [];
+    const openDates = normalizeOpenDates(nextSettings.openDates || []);
+    for (let index = 0; index < openDates.length; index += 1) {
+      const seedResult = await seedAttendanceRecordsFromSource(openDates[index], {
+        headers,
+        columnCount: safeColumnCount,
+        currentUser,
+        isAdminEdit: safeOptions.isAdminEdit !== false
+      });
+      if (seedResult.seeded) seededDates.push(openDates[index]);
+    }
+    return {
+      fileName: String(file && file.name ? file.name : '').trim(),
+      headers,
+      records,
+      replaceResult,
+      settingsResult,
+      settings: nextSettings,
+      seededDates
+    };
+  }
+
+  async function ensureSourceListReady(headers, columnCount) {
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    if (isDemoModeEnabled()) {
+      return normalizeSharePointListTitle(getStaticConfig().sharepoint.sourceListTitle, DEFAULT_SOURCE_LIST_TITLE) || DEFAULT_SOURCE_LIST_TITLE;
+    }
+    const listTitle = await resolveListTitle('source', getStaticConfig().sharepoint.sourceListTitle, DEFAULT_SOURCE_LIST_TITLE, 'Attendance main source records');
+    const cacheKey = `${listTitle}|${safeColumnCount}`;
+    if (ensuredSourceListCache.has(cacheKey)) return listTitle;
+    await ensureList(listTitle, 'Attendance main source records');
+    const fields = buildSourceListFields(headers, safeColumnCount);
+    for (let index = 0; index < fields.length; index += 1) {
+      await ensureField(listTitle, fields[index].internalName, fields[index].schemaXml);
+    }
+    await ensureFieldIndexed(listTitle, 'PersonKey');
+    ensuredSourceListCache.add(cacheKey);
+    return listTitle;
+  }
+
+  async function loadSourceRecords(columnCount) {
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    if (isDemoModeEnabled()) {
+      const demoData = await loadDemoData();
+      return Array.isArray(demoData && demoData.sourceRecords)
+        ? demoData.sourceRecords.map((row, index) => normalizeDemoSourceRecord(row, index, safeColumnCount))
+        : [];
+    }
+    const listTitle = await resolveExistingListTitle('source', getStaticConfig().sharepoint.sourceListTitle, DEFAULT_SOURCE_LIST_TITLE);
+    if (!listTitle) return [];
+    let available = new Set();
+    try {
+      const fieldRows = await getListFields(listTitle);
+      available = new Set(fieldRows.flatMap((row) => {
+        return [
+          String(row && row.InternalName || '').trim(),
+          String(row && row.Title || '').trim()
+        ].filter(Boolean);
+      }));
+      const requiredFields = ['PersonKey', 'ExcelRowNumber', 'JsonSnapshot'];
+      if (!requiredFields.every((fieldName) => available.has(fieldName))) return [];
+    } catch (error) {
+      if ([400, 403, 404, 500].includes(Number(error && error.status))) return [];
+      throw error;
+    }
+    const selectFields = [
+      'Id',
+      'PersonKey',
+      'ExcelRowNumber',
+      'UnitName',
+      'SourceFileName',
+      'ImportedAt',
+      'ImportedByName',
+      'ImportedByLogin',
+      'JsonSnapshot'
+    ].concat(
+      listFieldNames(safeColumnCount).filter((fieldName) => available.has(fieldName))
+    ).join(',');
+    try {
+      return await listItems(listTitle, `?$top=5000&$select=${selectFields}&$orderby=ExcelRowNumber asc,Id asc`);
+    } catch (error) {
+      if ([400, 403, 404, 500].includes(Number(error && error.status))) return [];
+      throw error;
+    }
+  }
+
+  async function ensureAttendanceListReady(headers, columnCount) {
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    if (isDemoModeEnabled()) {
+      return normalizeSharePointListTitle(getStaticConfig().sharepoint.attendanceListTitle, DEFAULT_ATTENDANCE_LIST_TITLE) || DEFAULT_ATTENDANCE_LIST_TITLE;
+    }
+    const listTitle = await resolveListTitle('attendance', getStaticConfig().sharepoint.attendanceListTitle, DEFAULT_ATTENDANCE_LIST_TITLE, 'Attendance daily history');
+    const cacheKey = `${listTitle}|${safeColumnCount}`;
+    if (ensuredAttendanceListCache.has(cacheKey)) return listTitle;
+    await ensureList(listTitle, 'Attendance daily history');
+    const fields = buildAttendanceListFields(headers, safeColumnCount);
+    for (let index = 0; index < fields.length; index += 1) {
+      const field = fields[index];
+      await ensureField(listTitle, field.internalName, field.schemaXml);
+    }
+    await ensureFieldIndexed(listTitle, 'DateKey');
+    ensuredAttendanceListCache.add(cacheKey);
+    return listTitle;
+  }
+
+  async function loadAttendanceRecordsForDate(dateKey, columnCount) {
+    const safeDateKey = normalizeDateKey(dateKey);
+    const safeColumnCount = Math.max(1, Number(columnCount || getStaticConfig().workbook.columnCount || 16));
+    if (!safeDateKey) return [];
+    if (isDemoModeEnabled()) {
+      const demoData = await loadDemoData();
+      return (Array.isArray(demoData && demoData.attendanceRecords) ? demoData.attendanceRecords : [])
+        .map((row, index) => normalizeDemoAttendanceRecord(row, index, safeColumnCount))
+        .filter((row) => String(row && row.DateKey || '').trim() === safeDateKey)
+        .sort((left, right) => (
+          Number(left && left.ExcelRowNumber || 0) - Number(right && right.ExcelRowNumber || 0)
+        ) || (
+          Number(right && right.Id || 0) - Number(left && left.Id || 0)
+        ));
+    }
+    const listTitle = await resolveExistingListTitle('attendance', getStaticConfig().sharepoint.attendanceListTitle, DEFAULT_ATTENDANCE_LIST_TITLE);
+    if (!listTitle) return [];
+    let available = new Set();
+    try {
+      const fieldRows = await getListFields(listTitle);
+      available = new Set(fieldRows.flatMap((row) => {
+        return [
+          String(row && row.InternalName || '').trim(),
+          String(row && row.Title || '').trim()
+        ].filter(Boolean);
+      }));
+      const requiredFields = ['DateKey', 'PersonKey', 'ExcelRowNumber', 'EditedAt', 'JsonSnapshot'];
+      if (!requiredFields.every((fieldName) => available.has(fieldName))) return [];
+    } catch (error) {
+      if ([400, 403, 404, 500].includes(Number(error && error.status))) return [];
+      throw error;
+    }
+    const selectFields = [
+      'Id',
+      'DateKey',
+      'PersonKey',
+      'ExcelRowNumber',
+      'EditedAt',
+      'JsonSnapshot'
+    ].concat(
+      listFieldNames(safeColumnCount).filter((fieldName) => available.has(fieldName))
+    ).join(',');
+    const query = `?$top=5000&$select=${selectFields}&$filter=DateKey eq '${escapeOData(safeDateKey)}'&$orderby=Id desc`;
+    try {
+      return await listItems(listTitle, query);
+    } catch (error) {
+      if ([400, 403, 404, 500].includes(Number(error && error.status))) return [];
+      throw error;
+    }
+  }
+
+  async function loadAttendanceRecordsForDates(dateKeys, columnCount) {
+    const dates = normalizeOpenDates(dateKeys || []);
+    if (!dates.length) return [];
+    const rows = [];
+    for (let index = 0; index < dates.length; index += 1) {
+      const items = await loadAttendanceRecordsForDate(dates[index], columnCount);
+      if (items.length) rows.push(...items);
+    }
+    return rows;
+  }
+
+  async function replaceSourceRecords(records, options) {
+    const safeRecords = Array.isArray(records) ? records.filter(Boolean) : [];
+    const safeOptions = options || {};
+    const safeColumnCount = Math.max(1, Number(safeOptions.columnCount || getStaticConfig().workbook.columnCount || 16));
+    const safeHeaders = Array.isArray(safeOptions.headers) ? safeOptions.headers : [];
+    const currentUser = safeOptions.currentUser && typeof safeOptions.currentUser === 'object'
+      ? safeOptions.currentUser
+      : { name: '', login: '', email: '' };
+    const sourceFileName = String(safeOptions.sourceFileName || '').trim().slice(0, 255);
+    const importedAt = new Date().toISOString();
+    if (isDemoModeEnabled()) {
+      let summary = null;
+      await updateDemoData((draft) => {
+        const existingRows = Array.isArray(draft.sourceRecords) ? draft.sourceRecords : [];
+        const existingById = new Map();
+        const existingByRowKey = new Map();
+        const existingByExcelRow = new Map();
+        existingRows.forEach((row) => {
+          const rowId = Number(row && row.Id || 0);
+          const rowKey = String(row && row.PersonKey || '').trim();
+          const excelRow = Number(row && row.ExcelRowNumber || 0);
+          if (rowId) existingById.set(rowId, row);
+          if (rowKey && !existingByRowKey.has(rowKey)) existingByRowKey.set(rowKey, row);
+          if (excelRow && !existingByExcelRow.has(excelRow)) existingByExcelRow.set(excelRow, row);
+        });
+        let nextId = existingRows.reduce((maxValue, row) => Math.max(maxValue, Number(row && row.Id || 0)), 0) + 1;
+        let createdCount = 0;
+        let updatedCount = 0;
+        draft.sourceRecords = safeRecords.map((record, index) => {
+          const explicitItemId = Number(record && record.listItemId || 0);
+          const rowKey = String(record && record.rowKey || '').trim();
+          const excelRow = Number(record && record.excelRow || 0);
+          const existingRow = (
+            (explicitItemId && existingById.get(explicitItemId))
+            || (rowKey ? existingByRowKey.get(rowKey) : null)
+            || (excelRow ? existingByExcelRow.get(excelRow) : null)
+            || null
+          );
+          const normalized = normalizeDemoSourceRecord({
+            Id: existingRow && existingRow.Id ? Number(existingRow.Id) : nextId,
+            rowKey,
+            excelRow,
+            unitName: String(record && record.unitName || '').trim(),
+            sourceFileName,
+            importedAt,
+            importedByName: String(currentUser.name || '').trim(),
+            importedByLogin: String(currentUser.login || currentUser.email || '').trim(),
+            cells: Array.isArray(record && record.cells) ? record.cells : []
+          }, index, safeColumnCount, sourceFileName);
+          if (existingRow && existingRow.Id) {
+            updatedCount += 1;
+          } else {
+            createdCount += 1;
+            nextId += 1;
+          }
+          return normalized;
+        });
+        summary = {
+          listTitle: normalizeSharePointListTitle(getStaticConfig().sharepoint.sourceListTitle, DEFAULT_SOURCE_LIST_TITLE) || DEFAULT_SOURCE_LIST_TITLE,
+          createdCount,
+          updatedCount,
+          deletedCount: Math.max(0, existingRows.length - draft.sourceRecords.length),
+          totalCount: safeRecords.length
+        };
+        if (safeHeaders.length) {
+          draft.settings = normalizeSettings({
+            ...(draft.settings || createDefaultSettings()),
+            sourceHeaders: normalizeSourceHeaders(safeHeaders, safeColumnCount)
+          });
+        }
+      });
+      return summary || {
+        listTitle: normalizeSharePointListTitle(getStaticConfig().sharepoint.sourceListTitle, DEFAULT_SOURCE_LIST_TITLE) || DEFAULT_SOURCE_LIST_TITLE,
+        createdCount: 0,
+        updatedCount: 0,
+        deletedCount: 0,
+        totalCount: safeRecords.length
+      };
+    }
+    const listTitle = await ensureSourceListReady(safeHeaders, safeColumnCount);
+    const existingRows = await loadSourceRecords(safeColumnCount);
+    const existingById = new Map();
+    const existingByRowKey = new Map();
+    const existingByExcelRow = new Map();
+    existingRows.forEach((row) => {
+      const rowId = Number(row && row.Id || 0);
+      const rowKey = String(row && row.PersonKey || '').trim();
+      const excelRow = Number(row && row.ExcelRowNumber || 0);
+      if (rowId) existingById.set(rowId, row);
+      if (rowKey && !existingByRowKey.has(rowKey)) existingByRowKey.set(rowKey, row);
+      if (excelRow && !existingByExcelRow.has(excelRow)) existingByExcelRow.set(excelRow, row);
+    });
+    const keepIds = new Set();
+    let createdCount = 0;
+    let updatedCount = 0;
+    for (let index = 0; index < safeRecords.length; index += 1) {
+      const record = safeRecords[index];
+      const cells = Array.isArray(record.cells) ? record.cells.slice(0, safeColumnCount) : [];
+      while (cells.length < safeColumnCount) cells.push('');
+      const explicitItemId = Number(record.listItemId || 0);
+      const rowKey = String(record.rowKey || '').trim().slice(0, 255);
+      const excelRow = Number(record.excelRow || 0);
+      const existingRow = (
+        (explicitItemId && existingById.get(explicitItemId))
+        || (rowKey ? existingByRowKey.get(rowKey) : null)
+        || (excelRow ? existingByExcelRow.get(excelRow) : null)
+        || null
+      );
+      const payload = {
+        Title: String(rowKey || excelRow || index + 1).trim().slice(0, 255) || `Source ${index + 1}`,
+        PersonKey: rowKey,
+        ExcelRowNumber: excelRow,
+        UnitName: String(record.unitName || '').trim().slice(0, 255),
+        SourceFileName: sourceFileName,
+        ImportedAt: importedAt,
+        ImportedByName: String(currentUser.name || '').trim().slice(0, 255),
+        ImportedByLogin: String(currentUser.login || currentUser.email || '').trim().slice(0, 255),
+        JsonSnapshot: JSON.stringify({
+          rowKey,
+          excelRow,
+          cells
+        })
+      };
+      if (existingRow && existingRow.Id) {
+        const existingId = Number(existingRow.Id || 0);
+        await updateListItem(listTitle, existingId, payload);
+        keepIds.add(existingId);
+        updatedCount += 1;
+        continue;
+      }
+      const created = await createListItem(listTitle, payload);
+      const createdId = Number(created && created.Id || 0);
+      if (createdId) keepIds.add(createdId);
+      createdCount += 1;
+    }
+    let deletedCount = 0;
+    for (let index = 0; index < existingRows.length; index += 1) {
+      const rowId = Number(existingRows[index] && existingRows[index].Id || 0);
+      if (!rowId || keepIds.has(rowId)) continue;
+      await deleteListItem(listTitle, rowId);
+      deletedCount += 1;
+    }
+    return {
+      listTitle,
+      createdCount,
+      updatedCount,
+      deletedCount,
+      totalCount: safeRecords.length
+    };
+  }
+
+  async function seedAttendanceRecordsFromSource(dateKey, options) {
+    const safeDateKey = normalizeDateKey(dateKey);
+    if (!safeDateKey) return { seeded: false, count: 0, reason: 'missing-date' };
+    const safeOptions = options || {};
+    const safeColumnCount = Math.max(1, Number(safeOptions.columnCount || getStaticConfig().workbook.columnCount || 16));
+    const existingRows = await loadAttendanceRecordsForDate(safeDateKey, safeColumnCount);
+    if (existingRows.length) {
+      return { seeded: false, count: existingRows.length, reason: 'already-seeded' };
+    }
+    const sourceRows = await loadSourceRecords(safeColumnCount);
+    if (!sourceRows.length) {
+      return { seeded: false, count: 0, reason: 'no-source-records' };
+    }
+    const records = sourceRows.map((record) => ({
+      rowKey: String(record && record.PersonKey || '').trim(),
+      excelRow: Number(record && record.ExcelRowNumber || 0),
+      unitName: String(record && record.UnitName || '').trim(),
+      cells: recordToCells(record, safeColumnCount)
+    }));
+    await upsertAttendanceRecords(records, {
+      dateKey: safeDateKey,
+      headers: Array.isArray(safeOptions.headers) ? safeOptions.headers : [],
+      columnCount: safeColumnCount,
+      workbookUrl: '',
+      currentUser: safeOptions.currentUser,
+      isAdminEdit: !!safeOptions.isAdminEdit
+    });
+    return { seeded: true, count: records.length, reason: 'seeded' };
+  }
+
+  async function upsertAttendanceRecords(records, options) {
+    const safeRecords = Array.isArray(records) ? records.filter(Boolean) : [];
+    if (!safeRecords.length) return true;
+    const safeOptions = options || {};
+    const safeColumnCount = Math.max(1, Number(safeOptions.columnCount || getStaticConfig().workbook.columnCount || 16));
+    const safeHeaders = Array.isArray(safeOptions.headers) ? safeOptions.headers : [];
+    const listTitle = await ensureAttendanceListReady(safeHeaders, safeColumnCount);
+    const currentUser = safeOptions.currentUser && typeof safeOptions.currentUser === 'object'
+      ? safeOptions.currentUser
+      : { name: '', login: '', email: '' };
+    const safeDateKey = normalizeDateKey(safeOptions.dateKey || todayKey());
+    const workbookUrl = String(safeOptions.workbookUrl || '').trim();
+    const editedAt = new Date().toISOString();
+    const isAdminEdit = !!safeOptions.isAdminEdit;
+    if (isDemoModeEnabled()) {
+      await updateDemoData((draft) => {
+        const allRows = Array.isArray(draft.attendanceRecords) ? draft.attendanceRecords : [];
+        const scopedRows = allRows.filter((row) => String(row && row.DateKey || '').trim() === safeDateKey);
+        const existingById = new Map();
+        const existingByRowKey = new Map();
+        const existingByExcelRow = new Map();
+        scopedRows.forEach((row) => {
+          const rowId = Number(row && row.Id || 0);
+          const rowKey = String(row && row.PersonKey || '').trim();
+          const excelRow = Number(row && row.ExcelRowNumber || 0);
+          if (rowId) existingById.set(rowId, row);
+          if (rowKey && !existingByRowKey.has(rowKey)) existingByRowKey.set(rowKey, row);
+          if (excelRow && !existingByExcelRow.has(excelRow)) existingByExcelRow.set(excelRow, row);
+        });
+        let nextId = allRows.reduce((maxValue, row) => Math.max(maxValue, Number(row && row.Id || 0)), 0) + 1;
+        const nextScopedRows = scopedRows.slice();
+        safeRecords.forEach((record) => {
+          const explicitItemId = Number(
+            record.listItemId
+            || record.rowRef && record.rowRef.listItemId
+            || 0
+          );
+          const rowKey = String(record.rowKey || '').trim().slice(0, 255);
+          const excelRow = Number(record.excelRow || 0);
+          const existingRow = (
+            (explicitItemId && existingById.get(explicitItemId))
+            || (rowKey ? existingByRowKey.get(rowKey) : null)
+            || (excelRow ? existingByExcelRow.get(excelRow) : null)
+            || null
+          );
+          const normalized = normalizeDemoAttendanceRecord({
+            Id: existingRow && existingRow.Id ? Number(existingRow.Id) : nextId,
+            dateKey: safeDateKey,
+            rowKey,
+            excelRow,
+            unitName: String(record.unitName || '').trim(),
+            editedByName: String(currentUser.name || '').trim(),
+            editedByLogin: String(currentUser.login || currentUser.email || '').trim(),
+            editedAt,
+            isAdminEdit,
+            workbookUrl,
+            cells: Array.isArray(record.cells) ? record.cells : []
+          }, nextScopedRows.length, safeColumnCount);
+          if (existingRow && existingRow.Id) {
+            const existingIndex = nextScopedRows.findIndex((row) => Number(row && row.Id || 0) === Number(existingRow.Id || 0));
+            if (existingIndex >= 0) nextScopedRows.splice(existingIndex, 1, normalized);
+            if (record.rowRef) record.rowRef.listItemId = Number(existingRow.Id || 0);
+          } else {
+            nextScopedRows.push(normalized);
+            if (record.rowRef) record.rowRef.listItemId = Number(normalized.Id || 0);
+            nextId += 1;
+          }
+        });
+        draft.attendanceRecords = allRows
+          .filter((row) => String(row && row.DateKey || '').trim() !== safeDateKey)
+          .concat(nextScopedRows)
+          .sort((left, right) => (
+            String(left && left.DateKey || '').localeCompare(String(right && right.DateKey || ''))
+          ) || (
+            Number(left && left.ExcelRowNumber || 0) - Number(right && right.ExcelRowNumber || 0)
+          ) || (
+            Number(left && left.Id || 0) - Number(right && right.Id || 0)
+          ));
+      });
+      return true;
+    }
+    const attendanceDateValue = safeDateKey ? `${safeDateKey}T00:00:00Z` : '';
+    const existingRows = await loadAttendanceRecordsForDate(safeDateKey, safeColumnCount);
+    const existingById = new Map();
+    const existingByRowKey = new Map();
+    const existingByExcelRow = new Map();
+    existingRows.forEach((row) => {
+      const rowId = Number(row && row.Id || 0);
+      const rowKey = String(row && row.PersonKey || '').trim();
+      const excelRow = Number(row && row.ExcelRowNumber || 0);
+      if (rowId) existingById.set(rowId, row);
+      if (rowKey && !existingByRowKey.has(rowKey)) existingByRowKey.set(rowKey, row);
+      if (excelRow && !existingByExcelRow.has(excelRow)) existingByExcelRow.set(excelRow, row);
+    });
+    for (let index = 0; index < safeRecords.length; index += 1) {
+      const record = safeRecords[index];
+      const cells = Array.isArray(record.cells) ? record.cells.slice(0, safeColumnCount) : [];
+      while (cells.length < safeColumnCount) cells.push('');
+      const explicitItemId = Number(
+        record.listItemId
+        || record.rowRef && record.rowRef.listItemId
+        || 0
+      );
+      const rowKey = String(record.rowKey || '').trim().slice(0, 255);
+      const excelRow = Number(record.excelRow || 0);
+      const existingRow = (
+        (explicitItemId && existingById.get(explicitItemId))
+        || (rowKey ? existingByRowKey.get(rowKey) : null)
+        || (excelRow ? existingByExcelRow.get(excelRow) : null)
+        || null
+      );
+      const payload = {
+        Title: String(`${safeDateKey} ${rowKey || excelRow || index + 1}`).trim().slice(0, 255) || `Attendance ${index + 1}`,
+        AttendanceDate: attendanceDateValue,
+        DateKey: safeDateKey,
+        PersonKey: rowKey,
+        ExcelRowNumber: excelRow,
+        UnitName: String(record.unitName || '').trim().slice(0, 255),
+        EditedByName: String(currentUser.name || '').trim().slice(0, 255),
+        EditedByLogin: String(currentUser.login || currentUser.email || '').trim().slice(0, 255),
+        EditedAt: editedAt,
+        IsAdminEdit: isAdminEdit,
+        WorkbookUrl: workbookUrl,
+        JsonSnapshot: JSON.stringify({
+          rowKey: String(record.rowKey || ''),
+          excelRow: Number(record.excelRow || 0),
+          cells
+        })
+      };
+      if (existingRow && existingRow.Id) {
+        await updateListItem(listTitle, Number(existingRow.Id), payload);
+        if (record.rowRef && Number(existingRow.Id)) record.rowRef.listItemId = Number(existingRow.Id);
+        continue;
+      }
+      const created = await createListItem(listTitle, payload);
+      const createdId = Number(created && created.Id || 0);
+      const nextRow = createdId ? { Id: createdId, PersonKey: rowKey, ExcelRowNumber: excelRow } : null;
+      if (createdId) existingById.set(createdId, nextRow);
+      if (rowKey && nextRow && !existingByRowKey.has(rowKey)) existingByRowKey.set(rowKey, nextRow);
+      if (excelRow && nextRow && !existingByExcelRow.has(excelRow)) existingByExcelRow.set(excelRow, nextRow);
+      if (record.rowRef && createdId) record.rowRef.listItemId = createdId;
+    }
+    return true;
+  }
+
+  async function deleteAttendanceRecords(records, options) {
+    const safeRecords = Array.isArray(records) ? records.filter(Boolean) : [];
+    if (!safeRecords.length) return true;
+    const safeOptions = options || {};
+    const safeColumnCount = Math.max(1, Number(safeOptions.columnCount || getStaticConfig().workbook.columnCount || 16));
+    const safeHeaders = Array.isArray(safeOptions.headers) ? safeOptions.headers : [];
+    const safeDateKey = normalizeDateKey(safeOptions.dateKey || todayKey());
+    if (!safeDateKey) return true;
+    if (isDemoModeEnabled()) {
+      await updateDemoData((draft) => {
+        const deleteById = new Set();
+        const deleteByRowKey = new Set();
+        const deleteByExcelRow = new Set();
+        safeRecords.forEach((record) => {
+          const explicitItemId = Number(record && record.listItemId || 0);
+          const rowKey = String(record && record.rowKey || '').trim();
+          const excelRow = Number(record && record.excelRow || 0);
+          if (explicitItemId) deleteById.add(explicitItemId);
+          if (rowKey) deleteByRowKey.add(rowKey);
+          if (excelRow) deleteByExcelRow.add(excelRow);
+        });
+        draft.attendanceRecords = (Array.isArray(draft.attendanceRecords) ? draft.attendanceRecords : [])
+          .filter((row) => {
+            if (String(row && row.DateKey || '').trim() !== safeDateKey) return true;
+            const rowId = Number(row && row.Id || 0);
+            const rowKey = String(row && row.PersonKey || '').trim();
+            const excelRow = Number(row && row.ExcelRowNumber || 0);
+            if (rowId && deleteById.has(rowId)) return false;
+            if (rowKey && deleteByRowKey.has(rowKey)) return false;
+            if (excelRow && deleteByExcelRow.has(excelRow)) return false;
+            return true;
+          });
+      });
+      return true;
+    }
+    const listTitle = await ensureAttendanceListReady(safeHeaders, safeColumnCount);
+    const existingRows = await loadAttendanceRecordsForDate(safeDateKey, safeColumnCount);
+    const existingByRowKey = new Map();
+    const existingByExcelRow = new Map();
+    existingRows.forEach((row) => {
+      const rowKey = String(row && row.PersonKey || '').trim();
+      const excelRow = Number(row && row.ExcelRowNumber || 0);
+      if (rowKey && !existingByRowKey.has(rowKey)) existingByRowKey.set(rowKey, row);
+      if (excelRow && !existingByExcelRow.has(excelRow)) existingByExcelRow.set(excelRow, row);
+    });
+    for (let index = 0; index < safeRecords.length; index += 1) {
+      const record = safeRecords[index];
+      const explicitItemId = Number(record.listItemId || 0);
+      const rowKey = String(record.rowKey || '').trim();
+      const excelRow = Number(record.excelRow || 0);
+      const itemId = explicitItemId
+        || Number((rowKey ? existingByRowKey.get(rowKey) && existingByRowKey.get(rowKey).Id : 0) || 0)
+        || Number((excelRow ? existingByExcelRow.get(excelRow) && existingByExcelRow.get(excelRow).Id : 0) || 0);
+      if (!itemId) continue;
+      try {
+        await deleteListItem(listTitle, itemId);
+      } catch (error) {
+        if (Number(error && error.status) === 404) continue;
+        throw error;
+      }
+    }
+    return true;
+  }
+
+  function buildAuditHeaders(headers, columnCount) {
+    const titles = Array.isArray(headers) && headers.length
+      ? headers.slice(0, columnCount)
+      : Array.from({ length: columnCount }, (_, index) => indexToColumnLetter(index));
+    return ['SavedAt', 'AttendanceDate', 'EditedByName', 'EditedByLogin', 'IsAdminEdit', 'ExcelRow', 'PersonKey'].concat(titles);
+  }
+
+  function appendAuditRows(workbook, headers, records, options) {
+    const config = getStaticConfig();
+    const sheetName = config.workbook.auditSheet;
+    const columnCount = Number(options && options.columnCount ? options.columnCount : headers.length || 16);
+    const auditHeaders = buildAuditHeaders(headers, columnCount);
+    const matrix = getSheetMatrix(workbook, sheetName, auditHeaders.length);
+    if (!matrix.length) {
+      clearSheetAndWrite(workbook, sheetName, [auditHeaders]);
+    } else {
+      const firstRow = (matrix[0] || []).map(normalizeCell);
+      const matches = auditHeaders.every((value, index) => String(firstRow[index] || '') === value);
+      if (!matches) {
+        clearSheetAndWrite(workbook, sheetName, [auditHeaders].concat(matrix.slice(1)));
+      }
+    }
+    const currentUser = options && options.currentUser ? options.currentUser : { name: '', login: '', email: '' };
+    const isAdminEdit = !!(options && options.isAdminEdit);
+    const dateKey = normalizeDateKey(options && options.dateKey ? options.dateKey : todayKey());
+    const rows = records.map((record) => {
+      return [
+        new Date().toISOString(),
+        dateKey,
+        currentUser.name || '',
+        currentUser.login || currentUser.email || '',
+        isAdminEdit ? '1' : '0',
+        String(record.excelRow || ''),
+        String(record.rowKey || '')
+      ].concat(record.cells.slice(0, columnCount));
+    });
+    if (rows.length) {
+      const startRow = getSheetLastRow(workbook, sheetName);
+      writeRowsToSheet(workbook, sheetName, rows, { r: startRow, c: 0 });
+    }
+    return true;
+  }
+
+  function rightRotate32(value, amount) {
+    return (value >>> amount) | (value << (32 - amount));
+  }
+
+  function sha256FallbackHex(text) {
+    const bytes = new TextEncoder().encode(String(text || ''));
+    const bitLength = bytes.length * 8;
+    const words = [];
+    for (let index = 0; index < bytes.length; index += 1) {
+      words[index >> 2] = (words[index >> 2] || 0) | (bytes[index] << (24 - ((index % 4) * 8)));
+    }
+    words[bytes.length >> 2] = (words[bytes.length >> 2] || 0) | (0x80 << (24 - ((bytes.length % 4) * 8)));
+    words[(((bytes.length + 8) >> 6) + 1) * 16 - 1] = bitLength;
+
+    const hash = [
+      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ];
+    const schedule = new Array(64);
+
+    for (let offset = 0; offset < words.length; offset += 16) {
+      for (let index = 0; index < 16; index += 1) {
+        schedule[index] = words[offset + index] | 0;
+      }
+      for (let index = 16; index < 64; index += 1) {
+        const s0 = rightRotate32(schedule[index - 15], 7) ^ rightRotate32(schedule[index - 15], 18) ^ (schedule[index - 15] >>> 3);
+        const s1 = rightRotate32(schedule[index - 2], 17) ^ rightRotate32(schedule[index - 2], 19) ^ (schedule[index - 2] >>> 10);
+        schedule[index] = (((schedule[index - 16] + s0) | 0) + ((schedule[index - 7] + s1) | 0)) | 0;
+      }
+
+      let a = hash[0];
+      let b = hash[1];
+      let c = hash[2];
+      let d = hash[3];
+      let e = hash[4];
+      let f = hash[5];
+      let g = hash[6];
+      let h = hash[7];
+
+      for (let index = 0; index < 64; index += 1) {
+        const s1 = rightRotate32(e, 6) ^ rightRotate32(e, 11) ^ rightRotate32(e, 25);
+        const ch = (e & f) ^ (~e & g);
+        const temp1 = (((((h + s1) | 0) + ch) | 0) + SHA256_K[index] + schedule[index]) | 0;
+        const s0 = rightRotate32(a, 2) ^ rightRotate32(a, 13) ^ rightRotate32(a, 22);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (s0 + maj) | 0;
+
+        h = g;
+        g = f;
+        f = e;
+        e = (d + temp1) | 0;
+        d = c;
+        c = b;
+        b = a;
+        a = (temp1 + temp2) | 0;
+      }
+
+      hash[0] = (hash[0] + a) | 0;
+      hash[1] = (hash[1] + b) | 0;
+      hash[2] = (hash[2] + c) | 0;
+      hash[3] = (hash[3] + d) | 0;
+      hash[4] = (hash[4] + e) | 0;
+      hash[5] = (hash[5] + f) | 0;
+      hash[6] = (hash[6] + g) | 0;
+      hash[7] = (hash[7] + h) | 0;
+    }
+
+    return hash.map((value) => (value >>> 0).toString(16).padStart(8, '0')).join('');
+  }
+
+  async function sha256Hex(text) {
+    const data = new TextEncoder().encode(String(text || ''));
+    if (window.crypto && window.crypto.subtle && typeof window.crypto.subtle.digest === 'function') {
+      const digest = await window.crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
+    }
+    return sha256FallbackHex(text);
+  }
+
+  function normalizeSearchText(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[\u200f\u200e]/g, ' ')
+      .replace(/[^0-9a-z\u0590-\u05ff+]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function splitSearchTokens(value) {
+    const normalized = normalizeSearchText(value);
+    return normalized ? normalized.split(' ') : [];
+  }
+
+  function matchesSearchTokens(candidate, query) {
+    const haystack = normalizeSearchText(candidate);
+    const tokens = Array.isArray(query) ? query : splitSearchTokens(query);
+    if (!tokens.length) return true;
+    return tokens.every((token) => haystack.includes(normalizeSearchText(token)));
+  }
+
+  window.AttendanceApp = {
+    DASHBOARD_SPECIAL_FIELDS,
+    SETTINGS_CACHE_KEY,
+    SELECTION_KEY,
+    appendAuditRows,
+    buildAuditHeaders,
+    buildColumnCatalog,
+    buildCompositeValue,
+    buildCustomChatRoomScope,
+    buildDirectChatScope,
+    buildGroupSelectionKey,
+    buildHeadersFromMatrix,
+    buildSelectionChatScope,
+    consumeQueuedChatRoomOpen,
+    clearSelection,
+    clearSheetAndWrite,
+    columnLetterToIndex,
+    queueChatRoomOpen,
+    createDefaultSettings,
+    createListItem,
+    deleteAttendanceRecords,
+    deleteListItem,
+    buildSharePointFieldSchema,
+    ensureAttendanceListReady,
+    ensureChatListReady,
+    ensureField,
+    ensureWorksheet,
+    escapeHtml,
+    extractColumnOptions,
+    formatDateLabel,
+    formatNumber,
+    getCurrentUser,
+    getListFields,
+    getPrimaryChatIdentity,
+    getUserAvatarText,
+    getUserDisplayName,
+    getSheetLastRow,
+    getSheetMatrix,
+    getSiteBaseUrl,
+    getStaticConfig,
+    initShellNotificationCenter,
+    initShellSidebar,
+    indexToColumnLetter,
+    isDemoModeEnabled,
+    listFieldNames,
+    listItems,
+    loadDemoData,
+    loadSharePointLists,
+    loadChatMessages,
+    loadRecentChatEntries,
+    loadAttendanceRecordsForDate,
+    loadAttendanceRecordsForDates,
+    importSourceRecordsFromFile,
+    loadSourceRecords,
+    loadManagementSettings,
+    loadSelection,
+    loadSettingsCache,
+    loadWorkbookFromSharePoint,
+    matchesColumnValues,
+    matchesSearchTokens,
+    normalizeCell,
+    normalizeChatIdentity,
+    normalizeColumnLetter,
+    normalizeColumnList,
+    resolveSourceHeaders,
+    resolveCustomChatRooms,
+    normalizeDashboardField,
+    normalizeDashboardFieldList,
+    normalizeDateKey,
+    normalizeGroupSelectionValues,
+    normalizeOpenDates,
+    normalizeRemoteExcelUrl,
+    normalizeSearchText,
+    normalizeSettings,
+    sanitizeSharePointFieldInternalName,
+    sanitizeSharePointFieldLabel,
+    hasWorkbookSource,
+    ensureWorkbookCopiesForDates,
+    prepareWorkbookForAttendance,
+    resolveDropdownConfigs,
+    resolveGroupCategories,
+    resolveDropdownSources,
+    resolveChatListTitle,
+    resolveCasualtyListTitle,
+    resolveExistingListTitle,
+    resolveListTitle,
+    resolveOperationsLogListTitle,
+    ensureSourceListReady,
+    resolvePhonebookWorkbookUrl,
+    resolveWorkbookUrl,
+    isManagedChatRoomScope,
+    replaceSourceRecords,
+    saveManagementSettings,
+    saveSelection,
+    saveSettingsCache,
+    saveWorkbookToSharePoint,
+    seedAttendanceRecordsFromSource,
+    sha256Hex,
+    splitSearchTokens,
+    shiftDate,
+    todayKey,
+    updateListItem,
+    updateFieldTitle,
+    recordToCells,
+    uniqueSorted,
+    createChatMessage,
+    upsertAttendanceRecords,
+    writeRowsToSheet
+  };
+})();
+
+
+/* ============================================================
+   Section: Page Controller - index.html
+   ============================================================ */
+
+(() => {
+  'use strict';
+
+  if (!document.body || document.body.dataset.page !== 'index') return;
+
+  const App = window.AttendanceApp;
+  const state = {
+    settings: App.createDefaultSettings(),
+    headers: [],
+    rows: [],
+    listModeUsedSourceRecords: false,
+    groupOptions: [],
+    groupCategories: [],
+    selectedGroupKeys: new Set(),
+    menuOpen: false,
+    busy: false,
+    adminMode: !!App.loadSelection().adminMode,
+    adminAccessOpen: !!App.loadSelection().adminMode,
+    groupSearchText: '',
+    currentUser: { name: '', email: '', login: '' },
+    statusKind: 'loading',
+    statusMessage: 'טוען את ההגדרות והנתונים...'
+  };
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function readTextFieldValue(id) {
+    const field = byId(id);
+    return field && 'value' in field ? String(field.value || '').trim() : '';
+  }
+
+  function setStatus(message, kind) {
+    const el = byId('status');
+    const styleMode = el && el.dataset ? String(el.dataset.statusStyle || '') : '';
+    const baseClass = styleMode === 'inline'
+      ? 'status-inline'
+      : styleMode === 'sr-only'
+      ? 'sr-only-status'
+      : 'status';
+    state.statusKind = String(kind || '').trim();
+    state.statusMessage = message || '';
+    el.className = `${baseClass}${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+    renderConnectionIndicator();
+  }
+
+  function setAdminDialogStatus(message, kind) {
+    const el = byId('adminDialogStatus');
+    if (!el) return;
+    el.className = `status${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  function selectedGroupOptions() {
+    return state.groupOptions.filter((option) => state.selectedGroupKeys.has(option.key));
+  }
+
+  function selectedGroupCategory() {
+    return state.groupCategories.find((category) => {
+      const memberKeys = Array.isArray(category.memberKeys) ? category.memberKeys : [];
+      return memberKeys.length
+        && memberKeys.length === state.selectedGroupKeys.size
+        && memberKeys.every((key) => state.selectedGroupKeys.has(key));
+    }) || null;
+  }
+
+  function setTextIfPresent(id, value) {
+    const el = byId(id);
+    if (el) el.textContent = value;
+  }
+
+  function renderConnectionIndicator() {
+    const host = byId('connectionIndicator');
+    const dot = byId('connectionIndicatorDot');
+    const label = byId('connectionIndicatorText');
+    const online = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+    const loading = state.busy || state.statusKind === 'loading';
+    const failed = !online || state.statusKind === 'err';
+    const healthy = online && !loading && !failed;
+    const labelText = healthy
+      ? 'החיבור תקין'
+      : loading
+      ? 'מתחבר...'
+      : 'החיבור נכשל';
+    if (dot) {
+      dot.classList.remove('bg-neutral-400', 'bg-emerald-500', 'bg-red-500');
+      dot.classList.add(healthy ? 'bg-emerald-500' : 'bg-red-500');
+    }
+    if (label) label.textContent = labelText;
+    if (host) host.title = state.statusMessage || labelText;
+  }
+
+  function renderSelectionOverview() {
+    const dateKey = String((byId('dateSelect') && byId('dateSelect').value) || '').trim();
+    const selected = selectedGroupOptions();
+    const activeCategory = selectedGroupCategory();
+    const hasDate = !!dateKey;
+    const canOpen = state.adminMode || !!selected.length;
+    let groupLabel = 'לא נבחרה';
+
+    if (activeCategory) groupLabel = activeCategory.label;
+    else if (selected.length === 1) groupLabel = selected[0].label;
+    else if (selected.length > 1) groupLabel = `${App.formatNumber(selected.length)} קבוצות`;
+    else if (state.adminMode) groupLabel = 'כל הקבוצות';
+
+    setTextIfPresent('selectionDateValue', hasDate ? App.formatDateLabel(dateKey) : 'לא נבחר');
+    setTextIfPresent('selectionDateValueMirror', hasDate ? App.formatDateLabel(dateKey) : 'לא נבחר');
+    setTextIfPresent('selectionGroupValue', groupLabel);
+    setTextIfPresent('selectionGroupValueMirror', groupLabel);
+    setTextIfPresent('selectionModeValue', state.adminMode ? 'מנהל' : 'מפעיל');
+    setTextIfPresent(
+      'selectionReadyValue',
+      state.busy ? 'טוען נתונים'
+        : hasDate && canOpen ? 'מוכן לפתיחה'
+        : !hasDate ? 'בחרו תאריך'
+        : 'בחרו קבוצה'
+    );
+
+    const panel = byId('launchPanel');
+    if (panel) panel.dataset.ready = hasDate && canOpen && !state.busy ? '1' : '0';
+    renderConnectionIndicator();
+  }
+
+  function updateOpenButton() {
+    const button = byId('openBtn');
+    const hasDate = !!String(byId('dateSelect').value || '').trim();
+    const canOpen = state.adminMode || selectedGroupOptions().length > 0;
+    button.disabled = state.busy || !hasDate || !canOpen;
+    renderSelectionOverview();
+  }
+
+  function renderGroupHint() {
+    const hint = byId('groupHint');
+    const count = selectedGroupOptions().length;
+    const activeCategory = selectedGroupCategory();
+    if (state.adminMode) {
+      hint.textContent = activeCategory
+        ? `${activeCategory.label} | ${App.formatNumber(activeCategory.memberKeys.length)} יחידות`
+        : count
+        ? `נבחרו ${App.formatNumber(count)} קבוצות.`
+        : '';
+      return;
+    }
+    hint.textContent = activeCategory
+      ? `${activeCategory.label} | ${App.formatNumber(activeCategory.memberKeys.length)} יחידות`
+      : count
+      ? (count === 1 ? 'נבחרה קבוצה אחת.' : `נבחרו ${App.formatNumber(count)} קבוצות.`)
+      : '';
+  }
+
+  function updateGroupButton() {
+    const button = byId('groupBtn');
+    const clearButton = byId('clearGroupBtn');
+    if (!button) return;
+    const label = button.firstElementChild || button;
+    const selected = selectedGroupOptions();
+    const activeCategory = selectedGroupCategory();
+    button.disabled = state.busy || !state.groupOptions.length;
+    if (clearButton) clearButton.disabled = state.busy || !selected.length;
+    if (!state.groupOptions.length) label.textContent = '\u05d0\u05d9\u05df \u05e7\u05d1\u05d5\u05e6\u05d5\u05ea \u05d6\u05de\u05d9\u05e0\u05d5\u05ea';
+    else if (!selected.length) label.textContent = state.adminMode ? '\u05db\u05dc \u05d4\u05e7\u05d1\u05d5\u05e6\u05d5\u05ea' : '\u05d1\u05d7\u05e8 \u05e7\u05d1\u05d5\u05e6\u05d4 \u05d0\u05d5 \u05d9\u05d5\u05ea\u05e8';
+    else if (activeCategory) label.textContent = activeCategory.label;
+    else if (selected.length === 1) label.textContent = selected[0].label;
+    else label.textContent = `\u05e0\u05d1\u05d7\u05e8\u05d5 ${App.formatNumber(selected.length)} \u05e7\u05d1\u05d5\u05e6\u05d5\u05ea`;
+    button.title = selected.map((option) => option.label).join(', ') || label.textContent;
+    renderGroupHint();
+    renderGroupCategories();
+    updateOpenButton();
+  }
+
+  function closeGroupMenu() {
+    state.menuOpen = false;
+    state.groupSearchText = '';
+    byId('groupMenu').classList.add('hidden');
+    byId('groupBtn').setAttribute('aria-expanded', 'false');
+    const searchInput = byId('groupSearch');
+    if (searchInput) {
+      searchInput.value = '';
+      searchInput.classList.add('hidden');
+    }
+    renderGroups();
+  }
+
+  function toggleGroupMenu() {
+    if (state.busy || !state.groupOptions.length) return;
+    state.menuOpen = !state.menuOpen;
+    byId('groupMenu').classList.toggle('hidden', !state.menuOpen);
+    byId('groupBtn').setAttribute('aria-expanded', state.menuOpen ? 'true' : 'false');
+    const searchInput = byId('groupSearch');
+    if (searchInput) {
+      searchInput.classList.toggle('hidden', !state.menuOpen);
+      if (state.menuOpen) {
+        searchInput.focus();
+        searchInput.select();
+      }
+    }
+    if (state.menuOpen) renderGroups();
+    else closeGroupMenu();
+  }
+
+  function renderSidebarRole() {
+    const adminOnlyItems = document.querySelectorAll('[data-admin-sidebar-only]');
+    adminOnlyItems.forEach((item) => item.classList.toggle('hidden', !state.adminMode));
+    const avatar = byId('sidebarRoleAvatar');
+    const title = byId('sidebarRoleTitle');
+    const subtitle = byId('sidebarRoleSubtitle');
+    if (avatar) avatar.textContent = state.adminMode ? 'AD' : 'OP';
+    if (title) title.textContent = state.adminMode ? 'מנהל' : 'מפעיל';
+    if (subtitle) subtitle.textContent = state.adminMode ? 'כל התפריט זמין' : 'נוכחות';
+  }
+
+  function renderSharePointSidebarRole() {
+    const avatar = byId('sidebarRoleAvatar');
+    const title = byId('sidebarRoleTitle');
+    const subtitle = byId('sidebarRoleSubtitle');
+    const roleTitle = state.adminMode ? 'מנהל' : 'מפעיל';
+    const displayName = App.getUserDisplayName(state.currentUser);
+    if (avatar) avatar.textContent = App.getUserAvatarText(state.currentUser, state.adminMode ? 'AD' : 'OP');
+    if (title) title.textContent = displayName || roleTitle;
+    if (subtitle) subtitle.textContent = displayName ? roleTitle : (state.adminMode ? 'כל התפריט זמין' : 'נוכחות');
+  }
+
+  function removeSidebarAdminPrompt() {
+    const button = byId('adminModeToggleBtn');
+    if (!button) return;
+    const group = button.closest('.qb-nav-group');
+    if (group) group.remove();
+    else button.remove();
+  }
+
+  async function hydrateCurrentUser() {
+    try {
+      state.currentUser = await App.getCurrentUser();
+      renderAdminState();
+    } catch (error) {}
+  }
+
+  function resetAdminLoginDialog() {
+    state.adminAccessOpen = false;
+    const passwordInput = byId('adminPasswordInput');
+    if (passwordInput) passwordInput.value = '';
+    setAdminDialogStatus('', '');
+  }
+
+  function openAdminLoginDialog() {
+    const dialog = byId('adminLoginDialog');
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    state.adminAccessOpen = true;
+    setAdminDialogStatus('', '');
+    if (!dialog.open) dialog.showModal();
+    const passwordInput = byId('adminPasswordInput');
+    if (passwordInput) {
+      passwordInput.value = '';
+      window.setTimeout(() => passwordInput.focus(), 0);
+    }
+  }
+
+  function closeAdminLoginDialog() {
+    const dialog = byId('adminLoginDialog');
+    if (dialog instanceof HTMLDialogElement && dialog.open) dialog.close();
+    else resetAdminLoginDialog();
+  }
+
+  function renderAdminState() {
+    const adminPageBtn = byId('adminPageBtn');
+    const fab = byId('adminFabBtn');
+    const fabIcon = byId('adminFabIcon');
+    renderSidebarRole();
+    renderSharePointSidebarRole();
+    if (adminPageBtn) adminPageBtn.classList.toggle('hidden', !state.adminMode);
+    if (fab) {
+      fab.classList.remove('active');
+      fab.title = 'כניסת מנהל';
+      fab.setAttribute('aria-label', 'כניסת מנהל');
+    }
+    if (fabIcon) fabIcon.textContent = '🔒';
+    renderGroupHint();
+    updateOpenButton();
+    return;
+    if (icon) icon.textContent = state.adminMode ? '🔓' : '🔒';
+    if (button) {
+      button.classList.toggle('active', state.adminMode);
+      button.setAttribute('aria-pressed', state.adminMode ? 'true' : 'false');
+      button.title = state.adminMode ? 'יציאה ממצב מנהל' : 'כניסת מנהל';
+    }
+    if (buttonText) buttonText.textContent = state.adminMode ? 'יציאה ממצב מנהל' : 'כניסת מנהל';
+    if (adminPageBtn) adminPageBtn.classList.toggle('hidden', !state.adminMode);
+    if (fab) {
+      fab.classList.toggle('active', state.adminMode);
+      fab.title = state.adminMode ? 'יציאה ממצב מנהל' : 'כניסת מנהל';
+      fab.setAttribute('aria-label', state.adminMode ? 'יציאה ממצב מנהל' : 'כניסת מנהל');
+    }
+    if (fabIcon) fabIcon.textContent = state.adminMode ? '🔓' : '🔒';
+    renderGroupHint();
+    updateOpenButton();
+  }
+
+  function syncSessionSelection() {
+    const selection = App.loadSelection();
+    const activeCategory = selectedGroupCategory();
+    selection.dateKey = byId('dateSelect').value || selection.dateKey || '';
+    selection.groupSelections = selectedGroupOptions().map((option) => ({ ...option.values }));
+    selection.groupValues = selection.groupSelections[0] || {};
+    selection.adminMode = state.adminMode;
+    selection.groupCategoryId = activeCategory ? activeCategory.id : '';
+    selection.groupCategoryLabel = activeCategory ? activeCategory.label : '';
+    App.saveSelection(selection);
+  }
+
+  function renderAdminState() {
+    const adminPageBtn = byId('adminPageBtn');
+    const fab = byId('adminFabBtn');
+    const fabIcon = byId('adminFabIcon');
+    const fabLabel = fab ? fab.querySelector('[data-admin-fab-label]') : null;
+    renderSidebarRole();
+    renderSharePointSidebarRole();
+    if (adminPageBtn) adminPageBtn.classList.toggle('hidden', !state.adminMode);
+    if (fab) {
+      fab.classList.toggle('active', state.adminMode);
+      fab.title = state.adminMode ? 'פתח מסך ניהול' : 'כניסת מנהל';
+      fab.setAttribute('aria-label', state.adminMode ? 'פתח מסך ניהול' : 'כניסת מנהל');
+    }
+    if (fabIcon) fabIcon.textContent = state.adminMode ? '⚙' : '🔒';
+    if (fabLabel) fabLabel.textContent = state.adminMode ? 'ניהול' : 'מנהל';
+    renderGroupHint();
+    updateOpenButton();
+  }
+
+  function setAdminMode(flag) {
+    state.adminMode = !!flag;
+    state.adminAccessOpen = false;
+    syncSessionSelection();
+    renderAdminState();
+    updateGroupButton();
+  }
+
+  function setBusy(flag) {
+    state.busy = !!flag;
+    byId('dateSelect').disabled = state.busy;
+    const adminToggleButton = byId('adminModeToggleBtn');
+    if (adminToggleButton) adminToggleButton.disabled = state.busy;
+    updateGroupButton();
+    updateOpenButton();
+  }
+
+  function renderDates() {
+    const select = byId('dateSelect');
+    const savedSelection = App.loadSelection();
+    const dates = App.normalizeOpenDates(state.settings.openDates || [App.todayKey()]);
+    select.innerHTML = dates.map((dateKey) => {
+      return `<option value="${dateKey}">${App.escapeHtml(App.formatDateLabel(dateKey))}</option>`;
+    }).join('');
+    select.value = dates.includes(savedSelection.dateKey)
+      ? savedSelection.dateKey
+      : (dates.includes(App.todayKey()) ? App.todayKey() : (dates[0] || App.todayKey()));
+    renderSelectionOverview();
+  }
+
+  function normalizeGroupValues(values) {
+    return App.normalizeGroupSelectionValues(values, state.settings.groupColumns);
+  }
+
+  function buildGroupKey(values) {
+    return JSON.stringify(normalizeGroupValues(values));
+  }
+
+  function buildGroupOptions() {
+    const seen = new Map();
+    state.rows.forEach((row) => {
+      const composite = App.buildCompositeValue(row.cells, state.settings.groupColumns, ' | ');
+      if (!composite.text) return;
+      const values = {};
+      state.settings.groupColumns.forEach((letter, index) => {
+        values[letter] = composite.parts[index] || '';
+      });
+      const key = buildGroupKey(values);
+      if (!seen.has(key)) {
+        seen.set(key, {
+          key,
+          label: composite.text,
+          values
+        });
+      }
+    });
+    state.groupOptions = Array.from(seen.values()).sort((left, right) => left.label.localeCompare(right.label, 'he'));
+  }
+
+  function buildResolvedGroupCategories() {
+    const optionMap = new Map(state.groupOptions.map((option) => [option.key, option]));
+    state.groupCategories = App.resolveGroupCategories(state.settings).map((category) => {
+      const memberMap = new Map();
+      (Array.isArray(category.selections) ? category.selections : []).forEach((selection) => {
+        const key = buildGroupKey(selection);
+        const option = optionMap.get(key);
+        if (!option || memberMap.has(key)) return;
+        memberMap.set(key, option);
+      });
+      const members = Array.from(memberMap.values());
+      if (!members.length) return null;
+      return {
+        id: category.id,
+        label: category.label,
+        selections: category.selections.map((selection) => ({ ...selection })),
+        memberKeys: members.map((member) => member.key),
+        members
+      };
+    }).filter(Boolean);
+  }
+
+  function restoreSelectedGroups() {
+    const savedSelection = App.loadSelection();
+    const rawGroups = Array.isArray(savedSelection.groupSelections) && savedSelection.groupSelections.length
+      ? savedSelection.groupSelections
+      : (savedSelection.groupValues && Object.keys(savedSelection.groupValues).length ? [savedSelection.groupValues] : []);
+    const validKeys = rawGroups
+      .map((groupValues) => buildGroupKey(groupValues))
+      .filter((key) => state.groupOptions.some((option) => option.key === key));
+    state.selectedGroupKeys = new Set(validKeys);
+  }
+
+  function clearSelectedGroups() {
+    state.selectedGroupKeys = new Set();
+    renderGroups();
+    syncSessionSelection();
+  }
+
+  function renderGroupCategories() {
+    const field = byId('groupCategoryField');
+    const host = byId('groupCategoryList');
+    const hint = byId('groupCategoryHint');
+    if (!field || !host || !hint) return;
+    if (!state.groupCategories.length) {
+      field.classList.add('hidden');
+      host.innerHTML = '';
+      hint.textContent = '';
+      return;
+    }
+    field.classList.remove('hidden');
+    const activeCategory = selectedGroupCategory();
+    host.innerHTML = state.groupCategories.map((category) => {
+      const active = activeCategory && activeCategory.id === category.id ? ' active' : '';
+      return `<button type="button" class="category-chip${active}" data-group-category="${App.escapeHtml(category.id)}"><span>${App.escapeHtml(category.label)}</span></button>`;
+    }).join('');
+    hint.textContent = '';
+  }
+
+  function applyGroupCategory(categoryId) {
+    const category = state.groupCategories.find((item) => item.id === categoryId);
+    if (!category) return;
+    state.selectedGroupKeys = new Set(category.memberKeys);
+    closeGroupMenu();
+    renderGroups();
+    syncSessionSelection();
+  }
+
+  function renderGroups() {
+    const menu = byId('groupMenu');
+    if (!state.groupOptions.length) {
+      menu.innerHTML = '<div class="menu-item menu-empty">\u05d0\u05d9\u05df \u05e7\u05d1\u05d5\u05e6\u05d5\u05ea \u05d6\u05de\u05d9\u05e0\u05d5\u05ea</div>';
+      updateGroupButton();
+      return;
+    }
+    const tokens = App.splitSearchTokens(state.groupSearchText || '');
+    const visibleOptions = state.groupOptions.filter((option) => {
+      if (!tokens.length) return true;
+      const haystack = String([option.label].concat(Object.values(option.values || {})).join(' ') || '')
+        .toLowerCase()
+        .replace(/[\u200f\u200e]/g, ' ')
+        .replace(/[^0-9a-z\u0590-\u05ff+]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return tokens.every((token) => haystack.includes(token));
+    });
+    if (!visibleOptions.length) {
+      menu.innerHTML = '<div class="menu-item menu-empty">\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05e7\u05d1\u05d5\u05e6\u05d5\u05ea \u05ea\u05d5\u05d0\u05de\u05d5\u05ea.</div>';
+      updateGroupButton();
+      return;
+    }
+    menu.innerHTML = visibleOptions.map((option) => {
+      const checked = state.selectedGroupKeys.has(option.key) ? ' checked' : '';
+      return `
+        <label class="menu-item">
+          <input type="checkbox" value="${App.escapeHtml(option.key)}"${checked}>
+          <span>${App.escapeHtml(option.label)}</span>
+        </label>
+      `;
+    }).join('');
+    updateGroupButton();
+  }
+  function buildRows(matrix, columnCount) {
+    const rows = [];
+    for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+      const sourceRow = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const cells = [];
+      for (let colIndex = 0; colIndex < columnCount; colIndex += 1) {
+        cells.push(String(sourceRow[colIndex] || ''));
+      }
+      if (!cells.some((cell) => String(cell || '').trim())) continue;
+      rows.push({ excelRow: rowIndex + 1, cells });
+    }
+    return rows;
+  }
+
+  function buildRowsFromListRecords(records, columnCount) {
+    const rows = [];
+    (Array.isArray(records) ? records : []).forEach((record, index) => {
+      const cells = App.recordToCells(record).slice(0, columnCount);
+      while (cells.length < columnCount) cells.push('');
+      if (!cells.some((cell) => String(cell || '').trim())) return;
+      rows.push({
+        excelRow: Number(record && record.ExcelRowNumber || index + 2),
+        cells
+      });
+    });
+    return rows;
+  }
+
+  async function loadData() {
+    setBusy(true);
+    try {
+      const settingsResult = await App.loadManagementSettings({ preferCache: true });
+      state.settings = settingsResult.settings;
+      renderDates();
+      const config = App.getStaticConfig();
+      const hasWorkbook = App.hasWorkbookSource(state.settings);
+      if (hasWorkbook) {
+        const workbookInfo = await App.loadWorkbookFromSharePoint(App.resolveWorkbookUrl(state.settings));
+        const matrix = App.getSheetMatrix(workbookInfo.workbook, config.workbook.mainSheet, config.workbook.columnCount);
+        if (!matrix.length) throw new Error(`\u05d4\u05d2\u05d9\u05dc\u05d9\u05d5\u05df '${config.workbook.mainSheet}' \u05e8\u05d9\u05e7.`);
+        state.headers = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+        state.rows = buildRows(matrix, config.workbook.columnCount);
+      } else {
+        const sourceRecords = await App.loadSourceRecords(config.workbook.columnCount);
+        const fallbackRecords = sourceRecords.length
+          ? []
+          : await App.loadAttendanceRecordsForDates(
+              state.settings.openDates && state.settings.openDates.length ? state.settings.openDates : [App.todayKey()],
+              config.workbook.columnCount
+            );
+        const usingSourceRecords = !!sourceRecords.length;
+        state.headers = App.resolveSourceHeaders(state.settings, config.workbook.columnCount);
+        state.rows = buildRowsFromListRecords(usingSourceRecords ? sourceRecords : fallbackRecords, config.workbook.columnCount);
+        state.listModeUsedSourceRecords = usingSourceRecords;
+      }
+      buildGroupOptions();
+      buildResolvedGroupCategories();
+      restoreSelectedGroups();
+      renderGroups();
+      renderAdminState();
+      const configNote = settingsResult.source === 'sharepoint'
+        ? '\u05d4\u05d2\u05d3\u05e8\u05d5\u05ea \u05e0\u05d9\u05d4\u05d5\u05dc \u05e0\u05d8\u05e2\u05e0\u05d5 \u05de-SharePoint.'
+        : '\u05d4\u05d2\u05d3\u05e8\u05d5\u05ea \u05e0\u05d9\u05d4\u05d5\u05dc \u05e0\u05d8\u05e2\u05e0\u05d5 \u05de\u05e7\u05d5\u05de\u05d9\u05ea.';
+      const sourceNote = hasWorkbook
+        ? '\u05e7\u05d5\u05d1\u05e5 Excel \u05d4\u05d8\u05e2\u05d9\u05e0\u05d4 \u05d4\u05d5\u05e9\u05dc\u05de\u05d4.'
+        : (state.listModeUsedSourceRecords
+          ? '\u05e0\u05ea\u05d5\u05e0\u05d9 \u05d4\u05d1\u05d7\u05d9\u05e8\u05d4 \u05e0\u05d8\u05e2\u05e0\u05d5 \u05de\u05de\u05d0\u05d2\u05e8 \u05d4\u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05d4\u05e8\u05d0\u05e9\u05d9 \u05d1-SharePoint.'
+          : (state.rows.length
+            ? '\u05d4\u05de\u05d0\u05d2\u05e8 \u05d4\u05e8\u05d0\u05e9\u05d9 \u05e2\u05d3\u05d9\u05d9\u05df \u05e8\u05d9\u05e7, \u05d0\u05d1\u05dc \u05e0\u05d8\u05e2\u05e0\u05d5 \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05d9\u05d5\u05de\u05d9\u05d5\u05ea \u05e7\u05d9\u05d9\u05de\u05d5\u05ea \u05de-SharePoint.'
+            : '\u05d4\u05de\u05d0\u05d2\u05e8 \u05d4\u05e8\u05d0\u05e9\u05d9 \u05e2\u05d3\u05d9\u05d9\u05df \u05e8\u05d9\u05e7, \u05d0\u05d9\u05df \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05dc\u05d1\u05d7\u05d9\u05e8\u05d4.'));
+      setStatus(`${configNote} ${sourceNote}`, 'ok');
+    } catch (error) {
+      setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05d8\u05e2\u05d9\u05e0\u05ea \u05d4\u05e0\u05ea\u05d5\u05e0\u05d9\u05dd.', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleAdminModeAccess() {
+    if (state.adminMode) {
+      window.location.href = 'admin.html';
+      return;
+    }
+    openAdminLoginDialog();
+  }
+
+  async function loginAdmin() {
+    try {
+      const passwordInput = byId('adminPasswordInput');
+      const password = String(passwordInput && 'value' in passwordInput ? passwordInput.value : '').trim();
+      if (!password) {
+        setAdminDialogStatus('הזינו קוד מנהל.', 'warn');
+        return;
+      }
+      const hash = await App.sha256Hex(password);
+      if (!state.settings.adminPasswordHash) {
+        state.settings.adminPasswordHash = hash;
+        const result = await App.saveManagementSettings(state.settings);
+        setAdminMode(true);
+        closeAdminLoginDialog();
+        if (result.warning) setStatus(`קוד המנהל נשמר מקומית בלבד. ${result.warning}`, 'warn');
+      } else if (hash === state.settings.adminPasswordHash) {
+        setAdminMode(true);
+        closeAdminLoginDialog();
+      } else {
+        setAdminDialogStatus('קוד שגוי.', 'err');
+        return;
+      }
+      if (passwordInput && 'value' in passwordInput) passwordInput.value = '';
+    } catch (error) {
+      setAdminDialogStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05db\u05e0\u05d9\u05e1\u05d4 \u05dc\u05de\u05e6\u05d1 \u05de\u05e0\u05d4\u05dc.', 'err');
+    }
+  }
+
+  function logoutAdmin() {
+    setAdminMode(false);
+    closeAdminLoginDialog();
+    setStatus('\u05de\u05e6\u05d1 \u05de\u05e0\u05d4\u05dc \u05db\u05d5\u05d1\u05d4.', 'ok');
+  }
+
+  function openAttendance() {
+    const groups = selectedGroupOptions().map((option) => ({ ...option.values }));
+    if (!state.adminMode && !groups.length) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05e7\u05d1\u05d5\u05e6\u05d4 \u05d0\u05d7\u05ea \u05dc\u05e4\u05d7\u05d5\u05ea \u05dc\u05e4\u05e0\u05d9 \u05de\u05e2\u05d1\u05e8 \u05dc\u05de\u05e1\u05da \u05d4\u05e0\u05d5\u05db\u05d7\u05d5\u05ea.', 'warn');
+      return;
+    }
+    const selection = App.loadSelection();
+    selection.dateKey = byId('dateSelect').value;
+    selection.groupSelections = groups;
+    selection.groupValues = groups[0] || {};
+    selection.adminMode = state.adminMode;
+    const activeCategory = selectedGroupCategory();
+    selection.groupCategoryId = activeCategory ? activeCategory.id : '';
+    selection.groupCategoryLabel = activeCategory ? activeCategory.label : '';
+    App.saveSelection(selection);
+    window.location.href = 'attendance.html';
+  }
+
+  function bindEvents() {
+    byId('dateSelect').addEventListener('change', () => {
+      syncSessionSelection();
+      updateOpenButton();
+    });
+    byId('groupBtn').addEventListener('click', (event) => {
+      event.preventDefault();
+      toggleGroupMenu();
+    });
+    byId('groupSearch').addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      state.groupSearchText = String(target.value || '');
+      renderGroups();
+    });
+    byId('groupMenu').addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+      const key = String(target.value || '');
+      if (!key) return;
+      if (target.checked) state.selectedGroupKeys.add(key);
+      else state.selectedGroupKeys.delete(key);
+      updateGroupButton();
+      syncSessionSelection();
+    });
+    byId('groupCategoryList').addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const button = target.closest('button[data-group-category]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      applyGroupCategory(String(button.dataset.groupCategory || ''));
+    });
+    byId('clearGroupBtn').addEventListener('click', clearSelectedGroups);
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.closest('#groupField')) return;
+      if (!state.menuOpen) return;
+      closeGroupMenu();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (!(event instanceof KeyboardEvent)) return;
+      if (event.key === 'Escape' && state.menuOpen) closeGroupMenu();
+    });
+    byId('openBtn').addEventListener('click', openAttendance);
+    const adminToggleButton = byId('adminModeToggleBtn');
+    const adminFabButton = byId('adminFabBtn');
+    const adminLoginButton = byId('adminLoginBtn');
+    const adminCloseButton = byId('adminLoginCloseBtn');
+    const adminPasswordInput = byId('adminPasswordInput');
+    const adminDialog = byId('adminLoginDialog');
+    if (adminToggleButton) adminToggleButton.addEventListener('click', toggleAdminModeAccess);
+    if (adminFabButton) adminFabButton.addEventListener('click', toggleAdminModeAccess);
+    if (adminLoginButton) adminLoginButton.addEventListener('click', loginAdmin);
+    if (adminCloseButton) adminCloseButton.addEventListener('click', closeAdminLoginDialog);
+    if (adminPasswordInput) {
+      adminPasswordInput.addEventListener('keydown', (event) => {
+        if (!(event instanceof KeyboardEvent)) return;
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        loginAdmin();
+      });
+    }
+    if (adminDialog instanceof HTMLDialogElement) {
+      adminDialog.addEventListener('close', resetAdminLoginDialog);
+      adminDialog.addEventListener('click', (event) => {
+        if (event.target === adminDialog) closeAdminLoginDialog();
+      });
+    }
+    window.addEventListener('online', renderConnectionIndicator);
+    window.addEventListener('offline', renderConnectionIndicator);
+  }
+  function init() {
+    removeSidebarAdminPrompt();
+    App.initShellSidebar();
+    bindEvents();
+    renderDates();
+    renderGroups();
+    renderAdminState();
+    renderConnectionIndicator();
+    hydrateCurrentUser();
+    loadData();
+  }
+
+  init();
+})();
+
+
+/* ============================================================
+   Section: Page Controller - attendance.html
+   ============================================================ */
+
+(() => {
+  'use strict';
+
+  if (!document.body || document.body.dataset.page !== 'attendance') return;
+
+  const App = window.AttendanceApp;
+  const COL_PERSON_ID = App.columnLetterToIndex('C');
+  const FORWARD_SYNC_MANUAL_DELAY_MS = 180;
+  const FORWARD_SYNC_AUTO_DELAY_MS = 1600;
+
+  const initialAttendanceSelection = App.loadSelection();
+
+  const state = {
+    settings: App.createDefaultSettings(),
+    selection: initialAttendanceSelection,
+    workbookInfo: null,
+    workbook: null,
+    masterWorkbookUrl: '',
+    copyInfo: null,
+    headers: [],
+    rows: [],
+    existingByRowKey: new Map(),
+    filters: {},
+    dropdownOptions: {},
+    currentUser: { name: '', email: '', login: '' },
+    selectedDate: '',
+    busy: false,
+    nextNewId: 1,
+    searchText: '',
+    phonebookSearchText: '',
+    sortLetter: '',
+    sortDirection: 'asc',
+    columnOrder: [],
+    selectedRowIds: new Set(),
+    deletedRows: [],
+    editingRowId: '',
+    openColumnMenuLetter: '',
+    rowsVersion: 0,
+    scopedRowsCacheKey: '',
+    scopedRowsCache: [],
+    visibleRowsCacheKey: '',
+    visibleRowsCache: [],
+    phonebookWorkbookUrl: '',
+    phonebookHeaders: [],
+    phonebookSourceRows: [],
+    phonebookSourceVersion: 0,
+    phonebookRowsCacheKey: '',
+    phonebookRowsCache: [],
+    settingsSource: '',
+    settingsWarning: '',
+    lastLoadedAt: null,
+    moreActionsOpen: false,
+    searchInputTimer: 0,
+    phonebookSearchTimer: 0,
+    autoSaveTimer: 0,
+    autoSavePending: false,
+    forwardSyncEnabled: initialAttendanceSelection.forwardSyncEnabled !== false,
+    forwardSyncTimer: 0,
+    forwardSyncPending: null,
+    forwardSyncRunning: false,
+    forwardSyncRunId: 0
+  };
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function setStatus(message, kind) {
+    const el = byId('status');
+    el.className = `status${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  function formatSettingsSourceLabel(source) {
+    const key = String(source || '').trim().toLowerCase();
+    const labels = {
+      sharepoint: 'SharePoint',
+      local: 'מקומי',
+      'local-cache': 'מטמון מקומי',
+      defaults: 'ברירת מחדל'
+    };
+    return labels[key] || (source ? String(source) : 'לא ידוע');
+  }
+
+  function formatInfoTime(value) {
+    if (!(value instanceof Date) || Number.isNaN(value.getTime())) return '-';
+    return new Intl.DateTimeFormat('he-IL', {
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(value);
+  }
+
+  function setBusy(flag) {
+    state.busy = !!flag;
+    ['saveBtn', 'addRowBtn', 'deleteRowsBtn', 'clearFiltersBtn', 'bulkEditBtn', 'resetColumnsBtn', 'exportExcelBtn', 'importExcelBtn'].forEach((id) => {
+      const element = byId(id);
+      if (element) element.disabled = state.busy;
+    });
+    updateActionAvailability();
+  }
+
+  function clearViewCaches() {
+    state.visibleRowsCacheKey = '';
+    state.visibleRowsCache = [];
+    state.phonebookRowsCacheKey = '';
+    state.phonebookRowsCache = [];
+  }
+
+  function clearRowSearchCaches(row) {
+    if (!row || typeof row !== 'object') return;
+    row.searchBlobAll = '';
+    row.searchBlobByLetters = null;
+  }
+
+  function rowCellsDiffer(leftCells, rightCells) {
+    const left = Array.isArray(leftCells) ? leftCells : [];
+    const right = Array.isArray(rightCells) ? rightCells : [];
+    const length = Math.max(left.length, right.length);
+    for (let index = 0; index < length; index += 1) {
+      if (String(left[index] || '') !== String(right[index] || '')) return true;
+    }
+    return false;
+  }
+
+  function refreshRowDirtyState(row) {
+    if (!row || typeof row !== 'object') return false;
+    row.isDirty = !!row.isNew || rowCellsDiffer(row.originalCells, row.currentCells);
+    return row.isDirty;
+  }
+
+  function touchRows() {
+    state.rowsVersion += 1;
+    state.scopedRowsCacheKey = '';
+    state.scopedRowsCache = [];
+    clearViewCaches();
+  }
+
+  function normalizeSearchTerm(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[\u200f\u200e]/g, ' ')
+      .replace(/[^0-9a-z\u0590-\u05ff+]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function tokenizeSearchQuery(value) {
+    const normalized = normalizeSearchTerm(value);
+    return normalized ? normalized.split(' ') : [];
+  }
+
+  function selectedGroupsCacheKey() {
+    const groups = selectedGroupSelections();
+    if (!groups.length) return isAdminMode() ? 'admin:*' : 'none';
+    return groups
+      .map((groupValues) => App.buildGroupSelectionKey(groupValues, state.settings.groupColumns))
+      .sort()
+      .join('||');
+  }
+
+  function activeFiltersCacheKey() {
+    const normalized = {};
+    Object.keys(state.filters || {}).sort().forEach((letter) => {
+      const value = String(state.filters[letter] || '').trim();
+      if (value) normalized[letter] = value;
+    });
+    return JSON.stringify(normalized);
+  }
+
+  function buildRowSearchBlob(row, letters) {
+    if (!Array.isArray(letters) || !letters.length) {
+      if (!row.searchBlobAll) {
+        row.searchBlobAll = normalizeSearchTerm(row.currentCells.map((cell) => String(cell || '').trim()).filter(Boolean).join(' '));
+      }
+      return row.searchBlobAll;
+    }
+    const key = letters.join(',');
+    if (!row.searchBlobByLetters) row.searchBlobByLetters = Object.create(null);
+    if (!row.searchBlobByLetters[key]) {
+      row.searchBlobByLetters[key] = normalizeSearchTerm(
+        letters
+          .map((letter) => valueForLetter(row, letter))
+          .filter(Boolean)
+          .join(' ')
+      );
+    }
+    return row.searchBlobByLetters[key];
+  }
+
+  function buildEmptyCells() {
+    const config = App.getStaticConfig();
+    return Array.from({ length: config.workbook.columnCount }, () => '');
+  }
+
+  function buildRowKey(cells, excelRow) {
+    const personId = String(cells[COL_PERSON_ID] || '').trim();
+    return personId ? `${personId}|${excelRow}` : `row|${excelRow}`;
+  }
+
+  function createRow(options) {
+    const config = App.getStaticConfig();
+    const cells = Array.isArray(options.cells) ? options.cells.slice(0, config.workbook.columnCount) : buildEmptyCells();
+    while (cells.length < config.workbook.columnCount) cells.push('');
+    const row = {
+      id: String(options.id || `row-${options.excelRow || state.nextNewId}`),
+      excelRow: Number(options.excelRow || 0),
+      isNew: !!options.isNew,
+      isDirty: !!options.isNew,
+      listItemId: Number(options.listItemId || 0),
+      baseCells: cells.slice(),
+      originalCells: cells.slice(),
+      currentCells: cells.slice(),
+      updatedForDate: false,
+      rowKey: Number(options.excelRow || 0) ? buildRowKey(cells, Number(options.excelRow || 0)) : '',
+      searchBlobAll: '',
+      searchBlobByLetters: null
+    };
+    if (row.isNew && !row.id.startsWith('new-')) row.id = `new-${state.nextNewId}`;
+    return row;
+  }
+
+  function buildWorkbookRows(matrix, idPrefix) {
+    const config = App.getStaticConfig();
+    const rows = [];
+    for (let rowIndex = 1; rowIndex < (matrix || []).length; rowIndex += 1) {
+      const source = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const cells = [];
+      for (let colIndex = 0; colIndex < config.workbook.columnCount; colIndex += 1) {
+        cells.push(String(source[colIndex] || ''));
+      }
+      if (!cells.some((cell) => String(cell || '').trim())) continue;
+      rows.push(createRow({
+        id: `${String(idPrefix || 'row')}-${rowIndex + 1}`,
+        excelRow: rowIndex + 1,
+        cells
+      }));
+    }
+    return rows;
+  }
+
+  function loadMainRows() {
+    const config = App.getStaticConfig();
+    const matrix = App.getSheetMatrix(state.workbook, config.workbook.mainSheet, config.workbook.columnCount);
+    if (!matrix.length) throw new Error(`\u05d4\u05d2\u05d9\u05dc\u05d9\u05d5\u05df '${config.workbook.mainSheet}' \u05e8\u05d9\u05e7.`);
+    state.headers = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+    state.rows = buildWorkbookRows(matrix, 'row');
+    state.columnOrder = defaultColumnOrder();
+    state.selectedRowIds = new Set();
+    state.deletedRows = [];
+    touchRows();
+  }
+
+  function loadDropdownOptions() {
+    state.dropdownOptions = {};
+    const configs = App.resolveDropdownConfigs(state.settings);
+    if (configs.length) {
+      configs.forEach((configItem) => {
+        state.dropdownOptions[configItem.column] = Array.isArray(configItem.options) ? configItem.options.slice() : [];
+      });
+      return;
+    }
+    const config = App.getStaticConfig();
+    const matrix = App.getSheetMatrix(state.workbook, config.workbook.dataSheet, 3);
+    Object.entries(App.resolveDropdownSources(state.settings)).forEach(([targetLetter, sourceLetter]) => {
+      state.dropdownOptions[targetLetter] = App.extractColumnOptions(matrix, sourceLetter);
+    });
+  }
+
+  function headerForLetter(letter, headers) {
+    const index = App.columnLetterToIndex(letter);
+    const activeHeaders = Array.isArray(headers) ? headers : state.headers;
+    return index >= 0 ? (activeHeaders[index] || letter) : letter;
+  }
+
+  function phonebookColumns() {
+    return Array.isArray(state.settings.phonebookColumns) ? state.settings.phonebookColumns : [];
+  }
+
+  function usingSeparatePhonebookWorkbook() {
+    return false;
+  }
+
+  function phonebookHeaderRow() {
+    return usingSeparatePhonebookWorkbook() ? state.phonebookHeaders : state.headers;
+  }
+
+  function phonebookDataRows() {
+    return usingSeparatePhonebookWorkbook() ? state.phonebookSourceRows : state.rows;
+  }
+
+  function phonebookDataVersion() {
+    return usingSeparatePhonebookWorkbook() ? state.phonebookSourceVersion : state.rowsVersion;
+  }
+
+  async function ensurePhonebookSourceLoaded() {
+    state.phonebookWorkbookUrl = '';
+    state.phonebookHeaders = state.headers.slice();
+    state.phonebookSourceRows = [];
+    state.phonebookSourceVersion += 1;
+    clearViewCaches();
+  }
+
+  function isAdminMode() {
+    return !!state.selection.adminMode;
+  }
+
+  function hasStoredGroupSelection() {
+    const savedGroups = Array.isArray(state.selection.groupSelections) ? state.selection.groupSelections : [];
+    if (savedGroups.some((groupValues) => groupValues && typeof groupValues === 'object' && Object.keys(groupValues).length)) return true;
+    return !!(state.selection.groupValues && typeof state.selection.groupValues === 'object' && Object.keys(state.selection.groupValues).length);
+  }
+
+  function selectedGroupSelections() {
+    const rawGroups = Array.isArray(state.selection.groupSelections) && state.selection.groupSelections.length
+      ? state.selection.groupSelections
+      : (state.selection.groupValues && Object.keys(state.selection.groupValues).length ? [state.selection.groupValues] : []);
+    return rawGroups
+      .map((groupValues) => {
+        const out = {};
+        state.settings.groupColumns.forEach((letter) => {
+          const value = String(groupValues && groupValues[letter] ? groupValues[letter] : '').trim();
+          if (value) out[letter] = value;
+        });
+        return Object.keys(out).length ? out : null;
+      })
+      .filter(Boolean);
+  }
+
+  function hasScopedGroups() {
+    return selectedGroupSelections().length > 0;
+  }
+
+  function primaryGroupSelection() {
+    return selectedGroupSelections()[0] || {};
+  }
+
+  function formatGroupValuesLabel(groupValues) {
+    const parts = state.settings.groupColumns
+      .map((letter) => String(groupValues && groupValues[letter] ? groupValues[letter] : '').trim())
+      .filter(Boolean);
+    return parts.join(' | ');
+  }
+
+  function getGroupLabel() {
+    const labels = selectedGroupSelections().map((groupValues) => formatGroupValuesLabel(groupValues)).filter(Boolean);
+    const categoryLabel = String(state.selection.groupCategoryLabel || '').trim();
+    if (!labels.length) return isAdminMode() ? '\u05db\u05dc \u05d4\u05e7\u05d1\u05d5\u05e6\u05d5\u05ea' : '\u05dc\u05dc\u05d0 \u05e7\u05d1\u05d5\u05e6\u05d4';
+    if (categoryLabel) {
+      return labels.length > 1
+        ? `${categoryLabel} (${App.formatNumber(labels.length)} \u05d9\u05d7\u05d9\u05d3\u05d5\u05ea)`
+        : categoryLabel;
+    }
+    if (labels.length <= 2) return labels.join(' , ');
+    return `${labels.slice(0, 2).join(' , ')} +${App.formatNumber(labels.length - 2)}`;
+  }
+
+  function isEditable(letter, row) {
+    if (isAdminMode()) return true;
+    if (state.settings.editableColumns.includes(letter)) return true;
+    return !!(row && row.isNew && state.settings.addRowColumns.includes(letter));
+  }
+
+  function rowMatchesSelection(row, groupValues) {
+    return App.matchesColumnValues(row.currentCells, groupValues);
+  }
+
+  function getScopedRows() {
+    const groups = selectedGroupSelections();
+    const cacheKey = `${state.rowsVersion}|${selectedGroupsCacheKey()}|${isAdminMode() ? 'admin' : 'user'}`;
+    if (state.scopedRowsCacheKey === cacheKey) return state.scopedRowsCache;
+    let rows = [];
+    if (!groups.length) rows = isAdminMode() ? state.rows.slice() : [];
+    else rows = state.rows.filter((row) => groups.some((groupValues) => rowMatchesSelection(row, groupValues)));
+    state.scopedRowsCacheKey = cacheKey;
+    state.scopedRowsCache = rows;
+    return rows;
+  }
+
+  function buildSearchTextForRow(row, letters) {
+    return buildRowSearchBlob(row, letters);
+  }
+
+  function rowMatchesText(row, query, letters) {
+    const tokens = Array.isArray(query) ? query : tokenizeSearchQuery(query);
+    if (!tokens.length) return true;
+    const haystack = buildSearchTextForRow(row, letters);
+    return tokens.every((token) => haystack.includes(token));
+  }
+
+  function compareDisplayValues(leftValue, rightValue) {
+    const left = String(leftValue || '').trim();
+    const right = String(rightValue || '').trim();
+    if (!left && !right) return 0;
+    if (!left) return 1;
+    if (!right) return -1;
+    const leftNumber = Number(left.replace(/,/g, ''));
+    const rightNumber = Number(right.replace(/,/g, ''));
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      if (leftNumber < rightNumber) return -1;
+      if (leftNumber > rightNumber) return 1;
+    }
+    return left.localeCompare(right, 'he', {
+      numeric: true,
+      sensitivity: 'base'
+    });
+  }
+
+  function getDefaultSortLetter() {
+    const identity = getIdentityColumnMap();
+    return identity.lastName
+      || identity.fullName
+      || identity.firstName
+      || state.settings.groupColumns[0]
+      || state.settings.editableColumns[0]
+      || 'A';
+  }
+
+  function ensureSortState() {
+    const current = App.normalizeColumnLetter(state.sortLetter);
+    if (current && App.columnLetterToIndex(current) >= 0) {
+      state.sortLetter = current;
+      return;
+    }
+    state.sortLetter = getDefaultSortLetter();
+    state.sortDirection = 'asc';
+  }
+
+  function defaultColumnOrder() {
+    return state.headers.map((_, index) => App.indexToColumnLetter(index));
+  }
+
+  function ensureColumnOrder() {
+    const defaults = defaultColumnOrder();
+    const available = new Set(defaults);
+    const ordered = Array.isArray(state.columnOrder) ? state.columnOrder.filter((letter) => available.has(letter)) : [];
+    defaults.forEach((letter) => {
+      if (!ordered.includes(letter)) ordered.push(letter);
+    });
+    state.columnOrder = ordered;
+  }
+
+  function visibleColumnLetters() {
+    ensureColumnOrder();
+    return state.columnOrder.slice();
+  }
+
+  function moveColumn(letter, direction) {
+    ensureColumnOrder();
+    const normalized = App.normalizeColumnLetter(letter);
+    const index = state.columnOrder.indexOf(normalized);
+    if (index < 0) return;
+    const targetIndex = index + Number(direction || 0);
+    if (targetIndex < 0 || targetIndex >= state.columnOrder.length) return;
+    const next = state.columnOrder.slice();
+    next.splice(index, 1);
+    next.splice(targetIndex, 0, normalized);
+    state.columnOrder = next;
+    state.openColumnMenuLetter = '';
+    renderRecords();
+  }
+
+  function resetColumnOrder() {
+    state.columnOrder = defaultColumnOrder();
+    state.openColumnMenuLetter = '';
+    renderRecords();
+  }
+
+  function sortRows(rows) {
+    ensureSortState();
+    const direction = state.sortDirection === 'desc' ? -1 : 1;
+    const letter = App.normalizeColumnLetter(state.sortLetter);
+    return rows.slice().sort((leftRow, rightRow) => {
+      const sortValue = compareDisplayValues(valueForLetter(leftRow, letter), valueForLetter(rightRow, letter)) * direction;
+      if (sortValue) return sortValue;
+      const excelSort = (Number(leftRow.excelRow || 0) - Number(rightRow.excelRow || 0));
+      if (excelSort) return excelSort;
+      return compareDisplayValues(buildRowTitle(leftRow, 0), buildRowTitle(rightRow, 0));
+    });
+  }
+
+  function canAddRowInCurrentScope() {
+    return isAdminMode() || !state.settings.groupColumns.length || selectedGroupSelections().length === 1;
+  }
+
+  function getVisibleRows() {
+    const searchTokens = tokenizeSearchQuery(state.searchText);
+    const cacheKey = [
+      state.rowsVersion,
+      selectedGroupsCacheKey(),
+      activeFiltersCacheKey(),
+      searchTokens.join('|'),
+      App.normalizeColumnLetter(state.sortLetter),
+      state.sortDirection
+    ].join('::');
+    if (state.visibleRowsCacheKey === cacheKey) return state.visibleRowsCache;
+    const filtered = getScopedRows().filter((row) => {
+      const filterMatch = Object.entries(state.filters).every(([letter, selected]) => {
+        if (!selected) return true;
+        const index = App.columnLetterToIndex(letter);
+        return index < 0 || String(row.currentCells[index] || '').trim() === String(selected || '').trim();
+      });
+      if (!filterMatch) return false;
+      if (!searchTokens.length) return true;
+      return rowMatchesText(row, searchTokens);
+    });
+    const out = sortRows(filtered);
+    state.visibleRowsCacheKey = cacheKey;
+    state.visibleRowsCache = out;
+    return out;
+  }
+
+  function isRowDirty(row) {
+    return !!(row && (row.isNew || row.isDirty));
+  }
+
+  function dirtyRows() {
+    return state.rows.filter(isRowDirty);
+  }
+
+  function pendingDeleteCount() {
+    return Array.isArray(state.deletedRows) ? state.deletedRows.length : 0;
+  }
+
+  function pendingChangeCount() {
+    return dirtyRows().length + pendingDeleteCount();
+  }
+
+  function hasPendingChanges() {
+    return pendingChangeCount() > 0;
+  }
+
+  function rowUpdatedForCurrentDate(row) {
+    return !!(row && (row.updatedForDate || row.isNew || isRowDirty(row)));
+  }
+
+  function countUpdatedRows(rows) {
+    return (Array.isArray(rows) ? rows : []).reduce((count, row) => {
+      return count + (rowUpdatedForCurrentDate(row) ? 1 : 0);
+    }, 0);
+  }
+
+  function buildSystemHeaders() {
+    const columnCount = App.getStaticConfig().workbook.columnCount;
+    return Array.from({ length: columnCount }, (_, index) => String(state.headers[index] || App.indexToColumnLetter(index)).trim());
+  }
+
+  function getExcelTransferRows() {
+    return getScopedRows().slice();
+  }
+
+  function importedCellsMatchCurrentScope(cells) {
+    const groups = selectedGroupSelections();
+    if (!groups.length) return true;
+    return groups.some((groupValues) => App.matchesColumnValues(cells, groupValues));
+  }
+
+  function buildExportWorkbookFileName() {
+    const sourceName = state.workbookInfo && state.workbookInfo.fileName
+      ? String(state.workbookInfo.fileName)
+      : 'attendance.xlsx';
+    const baseName = sourceName.replace(/\.[^.]+$/, '') || 'attendance';
+    const groupLabel = hasScopedGroups() ? getGroupLabel() : '';
+    const safeGroupLabel = String(groupLabel || '')
+      .replace(/[\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 48);
+    return `${baseName}-${state.selectedDate || App.todayKey()}${safeGroupLabel ? `-${safeGroupLabel}` : ''}-table.xlsx`.replace(/[\\/:*?"<>|]+/g, '-');
+  }
+
+  function downloadArrayBufferFile(buffer, fileName) {
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName || 'attendance.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function exportAttendanceRowsToExcel() {
+    if (state.busy) return;
+    if (!state.headers.length) {
+      setStatus('אין נתונים זמינים לייצוא כרגע.', 'warn');
+      return;
+    }
+    const scopedRows = getExcelTransferRows();
+    if (!scopedRows.length) {
+      setStatus('אין רשומות לייצוא בקבוצה שנבחרה.', 'warn');
+      return;
+    }
+    const workbook = XLSX.utils.book_new();
+    const mainSheetName = App.getStaticConfig().workbook.mainSheet || 'Attendance';
+    const rows = [buildSystemHeaders()].concat(scopedRows.map((row) => row.currentCells.slice(0, App.getStaticConfig().workbook.columnCount)));
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), mainSheetName);
+    const buffer = XLSX.write(workbook, {
+      bookType: 'xlsx',
+      type: 'array',
+      cellStyles: true
+    });
+    downloadArrayBufferFile(buffer, buildExportWorkbookFileName());
+    setStatus(`יוצא קובץ Excel עם ${App.formatNumber(scopedRows.length)} רשומות, באותו סדר עמודות של קובץ המקור הראשי.`, 'ok');
+  }
+
+  function readFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error('קריאת קובץ ה-Excel נכשלה.'));
+      reader.onload = () => resolve(reader.result);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function resolveImportSheetName(workbook) {
+    const preferred = String(App.getStaticConfig().workbook.mainSheet || '').trim();
+    if (preferred && Array.isArray(workbook && workbook.SheetNames) && workbook.SheetNames.includes(preferred)) return preferred;
+    return Array.isArray(workbook && workbook.SheetNames) && workbook.SheetNames.length
+      ? String(workbook.SheetNames[0] || '')
+      : '';
+  }
+
+  function validateImportedHeaders(matrix) {
+    const expected = buildSystemHeaders();
+    const actual = expected.map((_, index) => String((matrix[0] && matrix[0][index]) || '').trim());
+    const mismatchIndex = expected.findIndex((value, index) => value !== actual[index]);
+    if (mismatchIndex >= 0) {
+      throw new Error(`מבנה ה-Excel לא תואם למערכת. העמודה ${App.indexToColumnLetter(mismatchIndex)} חייבת להיות "${expected[mismatchIndex]}".`);
+    }
+    return expected;
+  }
+
+  function createImportedDraftRow(cells) {
+    const row = createRow({
+      id: `new-${state.nextNewId}`,
+      isNew: true,
+      cells
+    });
+    row.baseCells = buildEmptyCells();
+    row.originalCells = buildEmptyCells();
+    row.currentCells = cells.slice();
+    row.updatedForDate = false;
+    clearRowSearchCaches(row);
+    refreshRowDirtyState(row);
+    state.nextNewId += 1;
+    state.rows.push(row);
+    return row;
+  }
+
+  function findImportedRowTarget(importIndex, cells, byPersonId, scopedRows) {
+    const personId = String(cells[COL_PERSON_ID] || '').trim();
+    if (personId && byPersonId.has(personId)) {
+      const matches = byPersonId.get(personId) || [];
+      if (matches.length === 1) return matches[0];
+    }
+    return Array.isArray(scopedRows) ? (scopedRows[importIndex - 1] || null) : null;
+  }
+
+  async function importAttendanceRowsFromFile(file) {
+    if (!(file instanceof File)) return;
+    if (state.busy) return;
+    if (!state.settings.openDates.includes(state.selectedDate)) {
+      setStatus('ייבוא Excel אפשרי רק בתאריך פתוח לעריכה.', 'warn');
+      return;
+    }
+    const hadPendingChanges = hasPendingChanges();
+    if (hadPendingChanges && !window.confirm('יש שינויים שלא נשמרו בטבלה. לייבא קובץ חדש ולדרוס את העריכה המקומית?')) {
+      return;
+    }
+    let shouldScheduleSave = false;
+    setBusy(true);
+    try {
+      if (hadPendingChanges) {
+        state.rows = state.rows.filter((row) => !row.isNew);
+        state.selectedRowIds = new Set();
+        state.deletedRows = [];
+        state.editingRowId = '';
+        await loadDateRecords();
+        renderAll();
+      }
+      const buffer = await readFileAsArrayBuffer(file);
+      const workbook = XLSX.read(buffer, {
+        type: 'array',
+        cellStyles: true,
+        cellFormula: true,
+        cellNF: true,
+        codepage: 1255
+      });
+      const sheetName = resolveImportSheetName(workbook);
+      if (!sheetName) throw new Error('קובץ ה-Excel לא מכיל גיליון נתונים.');
+      const matrix = App.getSheetMatrix(workbook, sheetName, App.getStaticConfig().workbook.columnCount);
+      if (!matrix.length) throw new Error('קובץ ה-Excel ריק.');
+      validateImportedHeaders(matrix);
+      const scopedRows = getExcelTransferRows();
+      const byPersonId = new Map();
+      scopedRows.forEach((row) => {
+        const personId = String(row.currentCells[COL_PERSON_ID] || '').trim();
+        if (!personId) return;
+        if (!byPersonId.has(personId)) byPersonId.set(personId, []);
+        byPersonId.get(personId).push(row);
+      });
+      let importIndex = 0;
+      let updatedCount = 0;
+      let appendedCount = 0;
+      let unchangedCount = 0;
+      for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+        const source = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+        const cells = buildEmptyCells().map((_, colIndex) => String(source[colIndex] || ''));
+        if (!cells.some((value) => String(value || '').trim())) continue;
+        if (!importedCellsMatchCurrentScope(cells)) {
+          throw new Error(`השורה ${App.formatNumber(rowIndex + 1)} בקובץ הייבוא אינה שייכת לקבוצה שנבחרה במסך הראשי.`);
+        }
+        importIndex += 1;
+        const target = findImportedRowTarget(importIndex, cells, byPersonId, scopedRows);
+        if (target && !target.isNew) {
+          if (rowCellsDiffer(target.currentCells, cells)) {
+            target.currentCells = cells.slice();
+            target.rowKey = target.excelRow ? buildRowKey(target.currentCells, target.excelRow) : target.rowKey;
+            clearRowSearchCaches(target);
+            refreshRowDirtyState(target);
+            updatedCount += 1;
+            shouldScheduleSave = true;
+          } else {
+            unchangedCount += 1;
+          }
+          continue;
+        }
+        if (target && target.isNew) {
+          if (rowCellsDiffer(target.currentCells, cells)) {
+            target.currentCells = cells.slice();
+            clearRowSearchCaches(target);
+            refreshRowDirtyState(target);
+            updatedCount += 1;
+            shouldScheduleSave = true;
+          } else {
+            unchangedCount += 1;
+          }
+          continue;
+        }
+        createImportedDraftRow(cells);
+        appendedCount += 1;
+        shouldScheduleSave = true;
+      }
+      if (!importIndex) {
+        setStatus('הקובץ לא הכיל רשומות לייבוא.', 'warn');
+        return;
+      }
+      if (shouldScheduleSave) {
+        touchRows();
+        renderAll();
+      }
+      const summary = [];
+      if (updatedCount) summary.push(`${App.formatNumber(updatedCount)} עודכנו`);
+      if (appendedCount) summary.push(`${App.formatNumber(appendedCount)} נוספו`);
+      if (unchangedCount) summary.push(`${App.formatNumber(unchangedCount)} ללא שינוי`);
+      setStatus(summary.length ? `הייבוא הושלם: ${summary.join(' | ')}.` : 'לא זוהו שינויים חדשים בקובץ הייבוא.', summary.length ? 'ok' : 'warn');
+    } catch (error) {
+      setStatus(error.message || 'שגיאה בייבוא קובץ Excel.', 'err');
+    } finally {
+      setBusy(false);
+      if (shouldScheduleSave) scheduleAutoSave();
+    }
+  }
+
+  function activeFilterCount() {
+    return Object.values(state.filters || {}).reduce((count, value) => {
+      return count + (String(value || '').trim() ? 1 : 0);
+    }, 0);
+  }
+
+  function hasCustomColumnOrder() {
+    const defaults = defaultColumnOrder();
+    if (!defaults.length || !state.columnOrder.length) return false;
+    if (defaults.length !== state.columnOrder.length) return true;
+    return defaults.some((letter, index) => state.columnOrder[index] !== letter);
+  }
+
+  function setActionLabel(id, label) {
+    const button = byId(id);
+    if (!button) return;
+    const labelNode = button.querySelector('[data-action-label]');
+    if (labelNode) labelNode.textContent = String(label || '');
+  }
+
+  function syncMoreActionsMenu() {
+    const shell = document.querySelector('.attendance-more-shell');
+    const button = byId('moreActionsBtn');
+    const menu = byId('moreActionsMenu');
+    if (!(shell instanceof HTMLElement) || !(button instanceof HTMLButtonElement) || !(menu instanceof HTMLElement)) return;
+    const utilityNotice = activeFilterCount() > 0 || hasCustomColumnOrder();
+    shell.classList.toggle('is-open', state.moreActionsOpen);
+    button.setAttribute('aria-expanded', state.moreActionsOpen ? 'true' : 'false');
+    button.classList.toggle('has-notice', utilityNotice && !state.moreActionsOpen);
+    button.title = utilityNotice ? 'עוד פעולות עם עדכונים זמינים' : 'עוד פעולות';
+    menu.hidden = !state.moreActionsOpen;
+  }
+
+  function closeMoreActionsMenu() {
+    if (!state.moreActionsOpen) return;
+    state.moreActionsOpen = false;
+    syncMoreActionsMenu();
+  }
+
+  function toggleMoreActionsMenu(forceOpen) {
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !state.moreActionsOpen;
+    if (nextOpen && state.openColumnMenuLetter) closeColumnMenu();
+    state.moreActionsOpen = nextOpen;
+    syncMoreActionsMenu();
+  }
+
+  function renderSidebarState() {
+    const admin = isAdminMode();
+    document.querySelectorAll('[data-admin-sidebar-only]').forEach((item) => item.classList.toggle('hidden', !admin));
+    const avatar = byId('attendanceSidebarAvatar');
+    const title = byId('attendanceSidebarTitle');
+    const subtitle = byId('attendanceSidebarSubtitle');
+    if (avatar) avatar.textContent = admin ? 'AD' : 'OP';
+    if (title) title.textContent = admin ? 'מנהל' : 'מפעיל';
+    if (subtitle) subtitle.textContent = admin ? 'כל התפריט זמין' : 'נוכחות';
+  }
+
+  function renderSharePointAttendanceIdentity() {
+    const admin = isAdminMode();
+    const avatar = byId('attendanceSidebarAvatar');
+    const title = byId('attendanceSidebarTitle');
+    const subtitle = byId('attendanceSidebarSubtitle');
+    const roleTitle = admin ? 'מנהל' : 'מפעיל';
+    const displayName = App.getUserDisplayName(state.currentUser);
+    if (avatar) avatar.textContent = App.getUserAvatarText(state.currentUser, admin ? 'AD' : 'OP');
+    if (title) title.textContent = displayName || roleTitle;
+    if (subtitle) subtitle.textContent = displayName ? roleTitle : (admin ? 'כל התפריט זמין' : 'נוכחות');
+  }
+
+  function renderSourceMetaBar() {
+    const workbookEl = byId('sourceWorkbookText');
+    const modeEl = byId('sourceModeText');
+    const settingsEl = byId('sourceSettingsText');
+    const refreshEl = byId('sourceRefreshText');
+    if (!workbookEl || !modeEl || !settingsEl || !refreshEl) return;
+    const workbookName = state.workbookInfo && state.workbookInfo.fileName
+      ? String(state.workbookInfo.fileName)
+      : '-';
+    const modeParts = [];
+    if (!state.workbook) {
+      modeParts.push('רשימת SharePoint');
+    } else if (state.copyInfo && state.copyInfo.isDateCopy) {
+      modeParts.push('עותק יומי');
+      modeParts.push(state.copyInfo.created ? 'נוצר עכשיו' : 'עותק קיים');
+    } else {
+      modeParts.push('קובץ מקור');
+    }
+    const settingsParts = [formatSettingsSourceLabel(state.settingsSource)];
+    if (state.settingsWarning) settingsParts.push('מצב גיבוי');
+    const refreshParts = [];
+    const displayName = App.getUserDisplayName(state.currentUser);
+    if (state.lastLoadedAt) refreshParts.push(formatInfoTime(state.lastLoadedAt));
+    if (displayName) refreshParts.push(displayName);
+    workbookEl.textContent = workbookName;
+    modeEl.textContent = modeParts.join(' | ') || '-';
+    settingsEl.textContent = settingsParts.join(' | ') || '-';
+    refreshEl.textContent = refreshParts.join(' | ') || '-';
+  }
+
+  function organizeAttendanceActionGroups() {
+    const actions = byId('attendanceNavbarActions');
+    if (!(actions instanceof HTMLElement)) return;
+
+    let mainCluster = actions.querySelector('.attendance-action-cluster-main');
+    if (!(mainCluster instanceof HTMLElement)) {
+      mainCluster = document.createElement('div');
+      mainCluster.className = 'attendance-action-cluster attendance-action-cluster-main';
+    }
+
+    let utilityCluster = actions.querySelector('.attendance-action-cluster-utility');
+    if (!(utilityCluster instanceof HTMLElement)) {
+      utilityCluster = document.createElement('div');
+      utilityCluster.className = 'attendance-action-cluster attendance-action-cluster-utility';
+    }
+
+    ['saveBtn', 'addRowBtn', 'bulkEditBtn', 'dashboardBtn'].forEach((id) => {
+      const element = byId(id);
+      if (element instanceof HTMLElement) mainCluster.appendChild(element);
+    });
+
+    const deleteButton = byId('deleteRowsBtn');
+    if (deleteButton instanceof HTMLElement) utilityCluster.appendChild(deleteButton);
+
+    const moreShell = actions.querySelector('.attendance-more-shell');
+    if (moreShell instanceof HTMLElement) utilityCluster.appendChild(moreShell);
+
+    actions.appendChild(mainCluster);
+    actions.appendChild(utilityCluster);
+  }
+
+  function renderInfoBar() {
+    const admin = isAdminMode();
+    const sourceLabel = !state.workbook
+      ? 'רשימת SharePoint'
+      : (state.copyInfo && state.copyInfo.isDateCopy
+        ? 'עותק יומי'
+        : 'קובץ מקור');
+    const dirtyCount = dirtyRows().length;
+    const deleteCount = pendingDeleteCount();
+    const groupLabel = getGroupLabel();
+    const dateLabel = App.formatDateLabel(state.selectedDate);
+    const scopeLabel = `${groupLabel} | ${dateLabel}`;
+    renderSidebarState();
+    renderSharePointAttendanceIdentity();
+    renderSourceMetaBar();
+    const overviewCard = document.querySelector('.attendance-overview-card');
+    if (overviewCard instanceof HTMLElement) overviewCard.classList.toggle('is-minimal', !admin);
+    const settingsCard = byId('settingsKpiCard');
+    if (settingsCard instanceof HTMLElement) settingsCard.hidden = !admin;
+    const sourceStrip = byId('sourceStrip');
+    if (sourceStrip instanceof HTMLElement) sourceStrip.hidden = false;
+    const overviewTitle = byId('attendanceOverviewTitle');
+    if (overviewTitle) overviewTitle.textContent = scopeLabel;
+    const overviewDescription = byId('attendanceOverviewDescription');
+    if (overviewDescription) overviewDescription.textContent = '';
+    const navbarTitle = document.querySelector('body[data-page="attendance"] .qb-navbar-copy h1');
+    if (navbarTitle instanceof HTMLElement) navbarTitle.textContent = 'נוכחות';
+    byId('groupPill').textContent = groupLabel;
+    byId('datePill').textContent = dateLabel;
+    byId('dirtyPill').textContent = deleteCount
+      ? `${App.formatNumber(dirtyCount)} שינויים | ${App.formatNumber(deleteCount)} מחיקות`
+      : (dirtyCount ? `${App.formatNumber(dirtyCount)} שינויים` : 'ללא שינויים');
+    byId('settingsPill').textContent = admin ? `מנהל | ${sourceLabel}` : 'מפעיל';
+  }
+
+  function renderPhonebookTrigger() {
+    const button = byId('phonebookBtn');
+    if (!button) return;
+    const hasColumns = phonebookColumns().length > 0;
+    button.disabled = !hasColumns;
+    button.title = hasColumns
+      ? (isAdminMode() ? '\u05e1\u05e4\u05e8 \u05d8\u05dc\u05e4\u05d5\u05e0\u05d9\u05dd - \u05db\u05dc \u05d4\u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd' : '\u05e1\u05e4\u05e8 \u05d8\u05dc\u05e4\u05d5\u05e0\u05d9\u05dd')
+      : '\u05d9\u05e9 \u05dc\u05d4\u05d2\u05d3\u05d9\u05e8 \u05e2\u05de\u05d5\u05d3\u05d5\u05ea \u05e1\u05e4\u05e8 \u05d8\u05dc\u05e4\u05d5\u05e0\u05d9\u05dd \u05d1\u05de\u05e1\u05da \u05d4\u05e0\u05d9\u05d4\u05d5\u05dc';
+  }
+
+  function persistAttendanceSelection() {
+    state.selection.forwardSyncEnabled = state.forwardSyncEnabled !== false;
+    App.saveSelection(state.selection);
+  }
+
+  function renderForwardSyncToggle() {
+    const toggle = byId('forwardSyncToggle');
+    const note = byId('forwardSyncMeta');
+    if (!(toggle instanceof HTMLInputElement)) return;
+    const futureDates = buildForwardSyncDates(state.selectedDate, state.settings);
+    const toggleShell = toggle.closest('.attendance-sync-toggle');
+    toggle.checked = state.forwardSyncEnabled !== false;
+    toggle.disabled = !futureDates.length;
+    if (toggleShell instanceof HTMLElement) toggleShell.classList.toggle('is-disabled', toggle.disabled);
+    if (!(note instanceof HTMLElement)) return;
+    if (!futureDates.length) {
+      note.textContent = 'אין תאריכים פתוחים קדימה.';
+      return;
+    }
+    note.textContent = toggle.checked
+      ? `עדכוני ערך ימשיכו ל-${App.formatNumber(futureDates.length)} תאריכים פתוחים.`
+      : 'עדכוני ערך נשמרים ליום הנוכחי בלבד.';
+  }
+
+  function normalizePhoneHref(value) {
+    let out = String(value || '').trim().replace(/[^\d+]/g, '');
+    if (out.startsWith('00')) out = `+${out.slice(2)}`;
+    if (out.startsWith('+')) out = `+${out.slice(1).replace(/\+/g, '')}`;
+    else out = out.replace(/\+/g, '');
+    return out;
+  }
+
+  function looksLikePhoneValue(value) {
+    const href = normalizePhoneHref(value);
+    const digits = href.replace(/\D/g, '');
+    return digits.length >= 7;
+  }
+
+  function renderPhoneFieldValue(value) {
+    const text = String(value || '').trim();
+    if (!text) return '<span>-</span>';
+    if (!looksLikePhoneValue(text)) return `<span>${App.escapeHtml(text)}</span>`;
+    const href = normalizePhoneHref(text);
+    return `<a href="tel:${App.escapeHtml(href)}">${App.escapeHtml(text)}</a>`;
+  }
+
+  function getPhonebookRows() {
+    const searchTokens = tokenizeSearchQuery(state.phonebookSearchText);
+    const cacheKey = [
+      phonebookDataVersion(),
+      selectedGroupsCacheKey(),
+      usingSeparatePhonebookWorkbook() ? 'phonebook' : 'main',
+      isAdminMode() ? 'admin' : 'user',
+      searchTokens.join('|')
+    ].join('::');
+    if (state.phonebookRowsCacheKey === cacheKey) return state.phonebookRowsCache;
+    const sourceRows = phonebookDataRows();
+    const groups = selectedGroupSelections();
+    let baseRows;
+    if (isAdminMode()) baseRows = sourceRows.slice();
+    else if (!groups.length) baseRows = [];
+    else baseRows = sourceRows.filter((row) => groups.some((groupValues) => rowMatchesSelection(row, groupValues)));
+    const filtered = searchTokens.length
+      ? baseRows.filter((row) => rowMatchesText(row, searchTokens))
+      : baseRows;
+    const out = sortRows(filtered);
+    state.phonebookRowsCacheKey = cacheKey;
+    state.phonebookRowsCache = out;
+    return out;
+  }
+
+  function renderPhonebookDialog() {
+    const letters = phonebookColumns();
+    const headers = phonebookHeaderRow();
+    const meta = byId('phonebookMeta');
+    const host = byId('phonebookList');
+    const searchInput = byId('phonebookSearch');
+    if (searchInput) searchInput.value = state.phonebookSearchText;
+    if (!letters.length) {
+      meta.textContent = '';
+      host.innerHTML = '<div class="phone-empty">אין עמודות.</div>';
+      return;
+    }
+    const rows = getPhonebookRows();
+    const scopeLabel = isAdminMode() ? '\u05de\u05e0\u05d4\u05dc: \u05db\u05dc \u05d4\u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd' : `\u05e7\u05d1\u05d5\u05e6\u05d4: ${getGroupLabel()}`;
+    meta.textContent = `${scopeLabel} | ${App.formatNumber(rows.length)} | מקור: נתוני הנוכחות`;
+    if (!rows.length) {
+      host.innerHTML = `<div class="phone-empty">${String(state.phonebookSearchText || '').trim() ? 'אין תוצאות.' : 'אין רשומות.'}</div>`;
+      return;
+    }
+    const headHtml = letters.map((letter) => `<th>${App.escapeHtml(headerForLetter(letter, headers))}</th>`).join('');
+    const bodyHtml = rows.map((row) => {
+      const cells = letters.map((letter) => {
+        const index = App.columnLetterToIndex(letter);
+        const value = index >= 0 ? row.currentCells[index] : '';
+        return `<td>${renderPhoneFieldValue(value)}</td>`;
+      }).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+    host.innerHTML = `
+      <div class="table-grid-shell">
+        <table class="phonebook-table">
+          <thead>
+            <tr>${headHtml}</tr>
+          </thead>
+          <tbody>${bodyHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async function openPhonebookDialog() {
+    if (!phonebookColumns().length) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d4\u05d2\u05d3\u05d9\u05e8 \u05e2\u05de\u05d5\u05d3\u05d5\u05ea \u05e1\u05e4\u05e8 \u05d8\u05dc\u05e4\u05d5\u05e0\u05d9\u05dd \u05d1\u05de\u05e1\u05da \u05d4\u05e0\u05d9\u05d4\u05d5\u05dc.', 'warn');
+      return;
+    }
+    const dialog = byId('phoneDialog');
+    byId('phonebookMeta').textContent = '';
+    byId('phonebookList').innerHTML = '<div class="phone-empty">\u05d8\u05d5\u05e2\u05df...</div>';
+    if (!dialog.open) dialog.showModal();
+    try {
+      await ensurePhonebookSourceLoaded();
+      renderPhonebookDialog();
+      const searchInput = byId('phonebookSearch');
+      if (searchInput) searchInput.focus();
+    } catch (error) {
+      dialog.close();
+      setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05d8\u05e2\u05d9\u05e0\u05ea \u05e1\u05e4\u05e8 \u05d4\u05d8\u05dc\u05e4\u05d5\u05e0\u05d9\u05dd.', 'err');
+    }
+  }
+
+  function closePhonebookDialog() {
+    byId('phoneDialog').close();
+  }
+
+  function buildFilterOptions(letter) {
+    const index = App.columnLetterToIndex(letter);
+    if (index < 0) return [];
+    return App.uniqueSorted(getScopedRows().map((row) => String(row.currentCells[index] || '').trim()).filter(Boolean));
+  }
+
+  function hasActiveFilters() {
+    return Object.values(state.filters).some((value) => String(value || '').trim());
+  }
+
+  function openColumnMenu(letter) {
+    const normalized = App.normalizeColumnLetter(letter);
+    if (!normalized) return;
+    const previous = state.openColumnMenuLetter;
+    state.openColumnMenuLetter = previous === normalized ? '' : normalized;
+    syncColumnMenuDom(previous, state.openColumnMenuLetter);
+  }
+
+  function closeColumnMenu() {
+    if (!state.openColumnMenuLetter) return;
+    const previous = state.openColumnMenuLetter;
+    state.openColumnMenuLetter = '';
+    syncColumnMenuDom(previous, '');
+  }
+
+  function applyColumnFilter(letter, value) {
+    const normalized = App.normalizeColumnLetter(letter);
+    if (!normalized) return;
+    state.filters[normalized] = String(value || '').trim();
+    state.openColumnMenuLetter = '';
+    clearViewCaches();
+    renderRecords();
+    updateActionAvailability();
+  }
+
+  function clearColumnFilter(letter) {
+    const normalized = App.normalizeColumnLetter(letter);
+    if (!normalized) return;
+    delete state.filters[normalized];
+    state.openColumnMenuLetter = '';
+    clearViewCaches();
+    renderRecords();
+    updateActionAvailability();
+  }
+
+  function clearAllFilters() {
+    state.filters = {};
+    state.openColumnMenuLetter = '';
+    clearViewCaches();
+    renderRecords();
+    updateActionAvailability();
+  }
+
+  function renderColumnMenu(letter) {
+    const options = buildFilterOptions(letter);
+    const current = String(state.filters[letter] || '').trim();
+    const ordered = visibleColumnLetters();
+    const currentIndex = ordered.indexOf(letter);
+    const optionHtml = options.length
+      ? options.map((value) => {
+          const active = value === current ? ' active' : '';
+          return `<button type="button" class="th-menu-option${active}" data-filter-letter="${letter}" data-filter-value="${App.escapeHtml(value)}">${App.escapeHtml(value)}</button>`;
+        }).join('')
+      : '<div class="th-menu-empty">\u05d0\u05d9\u05df \u05e2\u05e8\u05db\u05d9\u05dd \u05d6\u05de\u05d9\u05e0\u05d9\u05dd \u05d1\u05e2\u05de\u05d5\u05d3\u05d4 \u05d6\u05d5.</div>';
+    return `
+      <div class="th-filter-menu" data-filter-menu-letter="${letter}">
+        <div class="th-menu-actions">
+          <button type="button" class="th-menu-action" data-menu-sort-letter="${letter}" data-menu-sort-direction="asc">\u05de\u05d9\u05d9\u05df \u05d0-\u05ea</button>
+          <button type="button" class="th-menu-action" data-menu-sort-letter="${letter}" data-menu-sort-direction="desc">\u05de\u05d9\u05d9\u05df \u05ea-\u05d0</button>
+          <button type="button" class="th-menu-action" data-move-column="${letter}" data-move-direction="-1"${currentIndex <= 0 ? ' disabled' : ''}>\u05d4\u05e2\u05d1\u05e8 \u05e9\u05de\u05d0\u05dc\u05d4</button>
+          <button type="button" class="th-menu-action" data-move-column="${letter}" data-move-direction="1"${currentIndex < 0 || currentIndex >= ordered.length - 1 ? ' disabled' : ''}>\u05d4\u05e2\u05d1\u05e8 \u05d9\u05de\u05d9\u05e0\u05d4</button>
+          <button type="button" class="th-menu-action" data-reset-columns="1">\u05d0\u05e4\u05e1 \u05e1\u05d3\u05e8 \u05e2\u05de\u05d5\u05d3\u05d5\u05ea</button>
+          <button type="button" class="th-menu-action" data-clear-filter-letter="${letter}">\u05e0\u05e7\u05d4 \u05e1\u05d9\u05e0\u05d5\u05df \u05d1\u05e2\u05de\u05d5\u05d3\u05d4</button>
+          ${hasActiveFilters() ? '<button type="button" class="th-menu-action" data-clear-all-filters="1">\u05e0\u05e7\u05d4 \u05d0\u05ea \u05db\u05dc \u05d4\u05e1\u05d9\u05e0\u05d5\u05e0\u05d9\u05dd</button>' : ''}
+        </div>
+        <div class="th-menu-list">${optionHtml}</div>
+      </div>
+    `;
+  }
+
+  function columnMenuGlyph(letter) {
+    return String(state.filters[letter] || '').trim()
+      ? '<span class="th-filter-dot">\u25cf</span>'
+      : '&#9662;';
+  }
+
+  function updateColumnMenuDom(letter) {
+    const normalized = App.normalizeColumnLetter(letter);
+    if (!normalized) return;
+    const host = byId('recordsBoard');
+    if (!host || !host.querySelector('.attendance-table')) return;
+    const menuButton = host.querySelector(`button[data-filter-menu-button="${normalized}"]`);
+    if (!(menuButton instanceof HTMLButtonElement)) return;
+    const filterActive = !!String(state.filters[normalized] || '').trim();
+    const menuOpen = state.openColumnMenuLetter === normalized;
+    menuButton.classList.toggle('filtered', filterActive);
+    menuButton.classList.toggle('open', menuOpen);
+    menuButton.innerHTML = columnMenuGlyph(normalized);
+    menuButton.setAttribute('aria-label', `\u05e1\u05d9\u05e0\u05d5\u05df \u05e2\u05de\u05d5\u05d3\u05d4 ${headerForLetter(normalized)}`);
+    const shell = menuButton.closest('.th-shell');
+    if (!(shell instanceof HTMLElement)) return;
+    const existingMenu = shell.querySelector('.th-filter-menu');
+    if (existingMenu) existingMenu.remove();
+    if (menuOpen) shell.insertAdjacentHTML('beforeend', renderColumnMenu(normalized));
+  }
+
+  function syncColumnMenuDom(previousLetter, nextLetter) {
+    const host = byId('recordsBoard');
+    if (!host || !host.querySelector('.attendance-table')) {
+      renderRecords();
+      return;
+    }
+    Array.from(new Set([previousLetter, nextLetter].filter(Boolean))).forEach(updateColumnMenuDom);
+  }
+
+  function normalizeHeaderKey(value) {
+    return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function findHeaderLetter(predicate) {
+    for (let index = 0; index < state.headers.length; index += 1) {
+      const header = normalizeHeaderKey(state.headers[index]);
+      if (!header) continue;
+      if (predicate(header)) return App.indexToColumnLetter(index);
+    }
+    return '';
+  }
+
+  function getIdentityColumnMap() {
+    const namePattern = /(?:name|\u05e9\u05dd)/i;
+    return {
+      firstName: findHeaderLetter((header) => namePattern.test(header) && /(?:first|given|\u05e4\u05e8\u05d8\u05d9)/i.test(header)),
+      lastName: findHeaderLetter((header) => namePattern.test(header) && /(?:last|family|surname|\u05de\u05e9\u05e4\u05d7)/i.test(header)),
+      fullName: findHeaderLetter((header) => /(?:full name|\u05e9\u05dd \u05de\u05dc\u05d0)/i.test(header)),
+      id: findHeaderLetter((header) => /(?:employee|person|id|\u05de\u05e1\u05e4\u05e8.*\u05d0\u05d9\u05e9\u05d9)/i.test(header)),
+      phone: findHeaderLetter((header) => /(?:phone|mobile|\u05d8\u05dc\u05e4\u05d5\u05df|\u05e0\u05d9\u05d9\u05d3)/i.test(header))
+    };
+  }
+
+  function valueForLetter(row, letter) {
+    const index = App.columnLetterToIndex(letter);
+    return index >= 0 ? String(row.currentCells[index] || '').trim() : '';
+  }
+
+  function textPreviewParts(row) {
+    const preferredLetters = ['G', 'H', 'A', 'B', 'C', 'D', 'E', 'F'];
+    const values = [];
+    preferredLetters.forEach((letter) => {
+      const value = valueForLetter(row, letter);
+      if (!value || /^\d+$/.test(value) || values.includes(value)) return;
+      values.push(value);
+    });
+    if (values.length) return values.slice(0, 3);
+    row.currentCells.forEach((value) => {
+      const text = String(value || '').trim();
+      if (!text || values.includes(text)) return;
+      values.push(text);
+    });
+    return values.slice(0, 3);
+  }
+
+  function buildRowTitle(row, rowIndex) {
+    const identity = getIdentityColumnMap();
+    const parts = [];
+    [identity.firstName, identity.lastName].forEach((letter) => {
+      const value = valueForLetter(row, letter);
+      if (value && !parts.includes(value)) parts.push(value);
+    });
+    if (!parts.length && identity.fullName) {
+      const fullName = valueForLetter(row, identity.fullName);
+      if (fullName) parts.push(fullName);
+    }
+    if (!parts.length) parts.push(...textPreviewParts(row));
+    return parts.join(' ').trim() || `\u05e8\u05e9\u05d5\u05de\u05d4 ${rowIndex + 1}`;
+  }
+
+  function buildRowSubtitle(row) {
+    const identity = getIdentityColumnMap();
+    const bits = [];
+    if (identity.id) {
+      const idValue = valueForLetter(row, identity.id);
+      if (idValue) bits.push(`${headerForLetter(identity.id)}: ${idValue}`);
+    }
+    if (identity.phone) {
+      const phoneValue = valueForLetter(row, identity.phone);
+      if (phoneValue) bits.push(`${headerForLetter(identity.phone)}: ${phoneValue}`);
+    }
+    if (row.excelRow) bits.push(`\u05e9\u05d5\u05e8\u05d4 ${row.excelRow}`);
+    if (row.isNew) bits.push('\u05d8\u05d9\u05d5\u05d8\u05d4 \u05d7\u05d3\u05e9\u05d4');
+    return bits.join(' | ');
+  }
+
+  function buildSummaryLetters(row) {
+    const identity = getIdentityColumnMap();
+    const candidates = []
+      .concat(state.settings.groupColumns || [])
+      .concat(state.settings.filterColumns || [])
+      .concat([identity.id, identity.phone, identity.fullName, identity.firstName, identity.lastName])
+      .concat(Array.from({ length: Math.min(state.headers.length, 8) }, (_, index) => App.indexToColumnLetter(index)));
+    const seen = new Set();
+    const out = [];
+    candidates.forEach((letter) => {
+      const normalized = App.normalizeColumnLetter(letter);
+      if (!normalized || seen.has(normalized)) return;
+      if (isEditable(normalized, row)) return;
+      const value = valueForLetter(row, normalized);
+      if (!value) return;
+      seen.add(normalized);
+      out.push(normalized);
+    });
+    return out.slice(0, 5);
+  }
+
+  function editableLettersForRow(row) {
+    return state.headers
+      .map((_, index) => App.indexToColumnLetter(index))
+      .filter((letter) => isEditable(letter, row));
+  }
+
+  function detailLettersForRow(row, summaryLetters) {
+    const blocked = new Set([...(summaryLetters || []), ...editableLettersForRow(row)]);
+    return state.headers
+      .map((_, index) => App.indexToColumnLetter(index))
+      .filter((letter) => {
+        if (blocked.has(letter)) return false;
+        return !!valueForLetter(row, letter);
+      });
+  }
+
+  function isRowEditing(row) {
+    return !!(row && (row.isNew || state.editingRowId === row.id));
+  }
+
+  function alwaysEditableLetters() {
+    return state.headers
+      .map((_, index) => App.indexToColumnLetter(index))
+      .slice(-4)
+      .filter((letter) => isEditable(letter));
+  }
+
+  function isAlwaysEditableCell(row, letter) {
+    return alwaysEditableLetters().includes(letter) && isEditable(letter, row);
+  }
+
+  function rowCanOpenForEdit(row) {
+    return !!(row && editableLettersForRow(row).some((letter) => !isAlwaysEditableCell(row, letter)));
+  }
+
+  function canEditCellInTable(row, letter) {
+    return isAlwaysEditableCell(row, letter) || (isRowEditing(row) && isEditable(letter, row));
+  }
+
+  function focusEditingRow(rowId) {
+    if (!rowId) return;
+    const field = byId('recordsBoard').querySelector(`tr[data-row-id="${rowId}"] .cell-input, tr[data-row-id="${rowId}"] .cell-select`);
+    if (!field) return;
+    field.focus();
+    if (field instanceof HTMLInputElement) field.select();
+  }
+
+  function setEditingRow(rowId, focusFirst) {
+    state.editingRowId = String(rowId || '');
+    renderRecords();
+    if (focusFirst) focusEditingRow(state.editingRowId);
+  }
+
+  function isRowSelected(rowId) {
+    return state.selectedRowIds.has(String(rowId || ''));
+  }
+
+  function toggleRowSelection(rowId, forceSelected) {
+    const key = String(rowId || '');
+    if (!key) return;
+    const shouldSelect = typeof forceSelected === 'boolean' ? forceSelected : !state.selectedRowIds.has(key);
+    if (shouldSelect) state.selectedRowIds.add(key);
+    else state.selectedRowIds.delete(key);
+    updateActionAvailability();
+    renderRecords();
+  }
+
+  function visibleSelectedCount() {
+    return getVisibleRows().filter((row) => state.selectedRowIds.has(row.id)).length;
+  }
+
+  function toggleVisibleSelection(flag) {
+    const visible = getVisibleRows();
+    visible.forEach((row) => {
+      if (flag) state.selectedRowIds.add(row.id);
+      else state.selectedRowIds.delete(row.id);
+    });
+    updateActionAvailability();
+    renderRecords();
+  }
+
+  function buildQuickAddCells() {
+    const cells = buildEmptyCells();
+    const defaultGroupValues = selectedGroupSelections().length === 1 ? primaryGroupSelection() : {};
+    state.settings.groupColumns.forEach((letter) => {
+      const index = App.columnLetterToIndex(letter);
+      if (index >= 0 && defaultGroupValues[letter]) cells[index] = String(defaultGroupValues[letter]);
+    });
+    return cells;
+  }
+
+  function insertDraftRow(cells, options) {
+    const rowId = `new-${state.nextNewId}`;
+    const nextCells = Array.isArray(cells) ? cells.slice(0, App.getStaticConfig().workbook.columnCount) : buildEmptyCells();
+    while (nextCells.length < App.getStaticConfig().workbook.columnCount) nextCells.push('');
+    const row = createRow({
+      id: rowId,
+      isNew: true,
+      cells: nextCells
+    });
+    row.baseCells = buildEmptyCells();
+    row.originalCells = buildEmptyCells();
+    row.currentCells = nextCells.slice();
+    row.rowKey = rowId;
+    clearRowSearchCaches(row);
+    refreshRowDirtyState(row);
+    state.nextNewId += 1;
+    state.rows.push(row);
+    touchRows();
+    state.selectedRowIds.add(row.id);
+    state.editingRowId = row.id;
+    renderAll();
+    focusEditingRow(row.id);
+    if (options && options.scheduleSave) scheduleAutoSave();
+    if (options && options.statusMessage) {
+      setStatus(String(options.statusMessage || ''), String(options.statusKind || 'ok'));
+    }
+    return row;
+  }
+
+  function quickAddRow() {
+    if (!canAddRowInCurrentScope()) {
+      setStatus('\u05db\u05d3\u05d9 \u05dc\u05d4\u05d5\u05e1\u05d9\u05e3 \u05e9\u05d5\u05e8\u05d4 \u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05e7\u05d1\u05d5\u05e6\u05d4 \u05d0\u05d7\u05ea \u05d0\u05d5 \u05dc\u05d4\u05d9\u05db\u05e0\u05e1 \u05db\u05de\u05e0\u05d4\u05dc.', 'warn');
+      return;
+    }
+    insertDraftRow(buildQuickAddCells(), {
+      statusMessage: '\u05e0\u05d5\u05e1\u05e4\u05d4 \u05e9\u05d5\u05e8\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d9\u05e9\u05d9\u05e8\u05d5\u05ea \u05d1\u05d8\u05d1\u05dc\u05d4. \u05d0\u05e4\u05e9\u05e8 \u05dc\u05e2\u05e8\u05d5\u05da \u05de\u05d9\u05d3 \u05d1\u05ea\u05d5\u05db\u05d4.'
+    });
+  }
+
+  function cloneRowFromSource(sourceRow) {
+    const nextCells = Array.isArray(sourceRow && sourceRow.currentCells) ? sourceRow.currentCells.slice() : buildEmptyCells();
+    insertDraftRow(nextCells, {
+      statusMessage: '\u05e0\u05d5\u05e6\u05e8\u05d4 \u05e9\u05d5\u05e8\u05ea \u05d4\u05e2\u05ea\u05e7 \u05d7\u05d3\u05e9\u05d4. \u05d0\u05e4\u05e9\u05e8 \u05dc\u05e2\u05d3\u05db\u05df \u05d0\u05d5\u05ea\u05d4 \u05dc\u05e4\u05e0\u05d9 \u05e9\u05de\u05d9\u05e8\u05d4.'
+    });
+  }
+
+  function discardRows(rowIds) {
+    const idSet = new Set((Array.isArray(rowIds) ? rowIds : []).map((item) => String(item || '')).filter(Boolean));
+    if (!idSet.size) {
+      return { removed: 0, deletedFromWorkbook: 0, discardedDrafts: 0 };
+    }
+    const rowsToRemove = state.rows.filter((row) => idSet.has(row.id));
+    if (!rowsToRemove.length) {
+      return { removed: 0, deletedFromWorkbook: 0, discardedDrafts: 0 };
+    }
+    rowsToRemove.forEach((row) => {
+      if (!row.isNew && row.excelRow) {
+        state.deletedRows.push({
+          excelRow: row.excelRow,
+          rowKey: row.rowKey,
+          cells: row.currentCells.slice()
+        });
+      }
+    });
+    state.rows = state.rows.filter((row) => !idSet.has(row.id));
+    touchRows();
+    idSet.forEach((rowId) => {
+      state.selectedRowIds.delete(rowId);
+    });
+    if (idSet.has(state.editingRowId)) state.editingRowId = '';
+    renderAll();
+    scheduleAutoSave();
+    return {
+      removed: rowsToRemove.length,
+      deletedFromWorkbook: rowsToRemove.filter((row) => !row.isNew && row.excelRow).length,
+      discardedDrafts: rowsToRemove.filter((row) => row.isNew).length
+    };
+  }
+
+  function removeRow(rowId) {
+    const row = state.rows.find((item) => item.id === rowId);
+    if (!row) return;
+    if (!window.confirm(`\u05dc\u05de\u05d7\u05d5\u05e7 \u05d0\u05ea \u05d4\u05e8\u05e9\u05d5\u05de\u05d4 "${buildRowTitle(row, 0)}"?`)) return;
+    const result = discardRows([rowId]);
+    if (!result.removed) return;
+    setStatus('\u05d4\u05e8\u05e9\u05d5\u05de\u05d4 \u05e1\u05d5\u05de\u05e0\u05d4 \u05dc\u05de\u05d7\u05d9\u05e7\u05d4 \u05d5\u05ea\u05d5\u05e1\u05e8 \u05d1\u05e9\u05de\u05d9\u05e8\u05d4.', 'warn');
+  }
+
+  function deleteSelectedRows() {
+    const rows = bulkEditableRows();
+    if (!rows.length) {
+      setStatus('\u05d1\u05d7\u05e8 \u05dc\u05e4\u05d7\u05d5\u05ea \u05e8\u05e9\u05d5\u05de\u05d4 \u05d0\u05d7\u05ea \u05db\u05d3\u05d9 \u05dc\u05de\u05d7\u05d5\u05e7 \u05d1\u05e7\u05d1\u05d5\u05e6\u05d4.', 'warn');
+      return;
+    }
+    const savedRows = rows.filter((row) => !row.isNew && row.excelRow).length;
+    const draftRows = rows.length - savedRows;
+    const confirmText = savedRows
+      ? `\u05dc\u05de\u05d7\u05d5\u05e7 ${App.formatNumber(rows.length)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea? ${App.formatNumber(savedRows)} \u05de\u05d4\u05df \u05d9\u05d5\u05e1\u05e8\u05d5 \u05de\u05e7\u05d5\u05d1\u05e5 \u05d4-Excel \u05d1\u05e9\u05de\u05d9\u05e8\u05d4${draftRows ? `, \u05d5-${App.formatNumber(draftRows)} \u05e8\u05e7 \u05d9\u05d9\u05d6\u05e8\u05e7\u05d5 \u05de\u05d4\u05d8\u05d1\u05dc\u05d4.` : '.'}`
+      : `\u05dc\u05de\u05d7\u05d5\u05e7 ${App.formatNumber(rows.length)} \u05e9\u05d5\u05e8\u05d5\u05ea \u05d7\u05d3\u05e9\u05d5\u05ea \u05de\u05d4\u05d8\u05d1\u05dc\u05d4?`;
+    if (!window.confirm(confirmText)) return;
+    const result = discardRows(rows.map((row) => row.id));
+    if (!result.removed) return;
+    const statusParts = [];
+    if (result.deletedFromWorkbook) statusParts.push(`${App.formatNumber(result.deletedFromWorkbook)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05e1\u05d5\u05de\u05e0\u05d5 \u05dc\u05de\u05d7\u05d9\u05e7\u05d4`);
+    if (result.discardedDrafts) statusParts.push(`${App.formatNumber(result.discardedDrafts)} \u05e9\u05d5\u05e8\u05d5\u05ea \u05d7\u05d3\u05e9\u05d5\u05ea \u05d4\u05d5\u05e1\u05e8\u05d5`);
+    setStatus(`${statusParts.join(' \u05d5-')}.`, result.deletedFromWorkbook ? 'warn' : 'ok');
+  }
+
+  function inferCellTone(value) {
+    const text = String(value || '').trim().toLowerCase();
+    if (!text) return '';
+    if (/(נוכח|present|active|ok|זמין)/.test(text)) return 'present';
+    if (/(נעדר|absent|missing|חסר)/.test(text)) return 'absent';
+    if (/(איחור|מאחר|late)/.test(text)) return 'late';
+    if (/(חופשה|מחלה|leave|vacation|pto|sick)/.test(text)) return 'leave';
+    if (/(ממתין|pending|בטיפול)/.test(text)) return 'pending';
+    return '';
+  }
+
+  function toneDataAttr(value) {
+    const tone = inferCellTone(value);
+    return tone ? ` data-tone="${tone}"` : '';
+  }
+
+  function syncCellToneState(element, value) {
+    if (!(element instanceof HTMLElement)) return;
+    const tone = inferCellTone(value);
+    if (tone) element.dataset.tone = tone;
+    else delete element.dataset.tone;
+  }
+
+  function buildCellControl(row, letter, value) {
+    const index = App.columnLetterToIndex(letter);
+    if (index < 0) return `<span class="cell-text">${App.escapeHtml(value || '-')}</span>`;
+    const current = String(value || '');
+    const selectValues = state.dropdownOptions[letter];
+    if (canEditCellInTable(row, letter) && Array.isArray(selectValues) && selectValues.length) {
+      const effectiveOptions = selectValues.slice();
+      if (current && !effectiveOptions.includes(current)) {
+        effectiveOptions.unshift(current);
+      }
+      const options = ['<option value=""></option>']
+        .concat(effectiveOptions.map((option) => {
+          return `<option value="${App.escapeHtml(option)}"${option === current ? ' selected' : ''}>${App.escapeHtml(option)}</option>`;
+        }))
+        .join('');
+      return `<select class="cell-select" data-row-id="${App.escapeHtml(row.id)}" data-letter="${letter}"${toneDataAttr(current)}>${options}</select>`;
+    }
+    if (canEditCellInTable(row, letter)) {
+      return `<input class="cell-input" data-row-id="${App.escapeHtml(row.id)}" data-letter="${letter}" value="${App.escapeHtml(current)}"${toneDataAttr(current)}>`;
+    }
+    return `<span class="cell-text${inferCellTone(current) ? ' cell-badge' : ''}" title="${App.escapeHtml(current)}"${toneDataAttr(current)}>${App.escapeHtml(current || '-')}</span>`;
+  }
+
+  function frozenVisibleColumnLetters(letters) {
+    const ordered = Array.isArray(letters) ? letters.slice() : visibleColumnLetters();
+    const frozen = new Set(App.normalizeColumnList(state.settings.frozenColumns, []));
+    return ordered.filter((letter) => frozen.has(letter));
+  }
+
+  function applyFrozenColumnsLayout() {
+    const host = byId('recordsBoard');
+    if (!(host instanceof HTMLElement)) return;
+    const table = host.querySelector('.attendance-table');
+    if (!(table instanceof HTMLTableElement)) return;
+    const allCells = Array.from(table.querySelectorAll('[data-col-letter]'));
+    allCells.forEach((cell) => {
+      cell.classList.remove('frozen-col', 'frozen-col-edge');
+      cell.style.removeProperty('--freeze-right');
+    });
+    const frozenLetters = frozenVisibleColumnLetters();
+    if (!frozenLetters.length) return;
+    const actionCells = Array.from(table.querySelectorAll('.action-col'));
+    let rightOffset = actionCells.reduce((maxWidth, cell) => {
+      return Math.max(maxWidth, Math.ceil(cell.getBoundingClientRect().width || 0));
+    }, 0);
+    frozenLetters.forEach((letter, index) => {
+      const cells = Array.from(table.querySelectorAll(`[data-col-letter="${letter}"]`));
+      if (!cells.length) return;
+      const width = cells.reduce((maxWidth, cell) => {
+        return Math.max(maxWidth, Math.ceil(cell.getBoundingClientRect().width || 0));
+      }, 0);
+      const isEdge = index === frozenLetters.length - 1;
+      cells.forEach((cell) => {
+        cell.classList.add('frozen-col');
+        if (isEdge) cell.classList.add('frozen-col-edge');
+        cell.style.setProperty('--freeze-right', `${rightOffset}px`);
+      });
+      rightOffset += width;
+    });
+  }
+
+  function renderRecords() {
+    const host = byId('recordsBoard');
+    const meta = byId('resultsMeta');
+    const visible = getVisibleRows();
+    const updatedVisibleCount = countUpdatedRows(visible);
+    const selectedVisibleCount = visible.filter((row) => state.selectedRowIds.has(row.id)).length;
+    const dirtyVisibleCount = visible.filter((row) => isRowDirty(row)).length;
+    const newVisibleCount = visible.filter((row) => row.isNew).length;
+    meta.textContent = [
+      `${App.formatNumber(visible.length)} רשומות פעילות`,
+      `${App.formatNumber(updatedVisibleCount)} עודכנו היום`,
+      dirtyVisibleCount ? `${App.formatNumber(dirtyVisibleCount)} עם שינויים` : ''
+    ].filter(Boolean).join(' · ');
+    if (!visible.length) {
+      host.innerHTML = `<div class="table-empty">\u05d0\u05d9\u05df \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05dc\u05d4\u05e6\u05d2\u05d4 \u05d1\u05d1\u05d7\u05d9\u05e8\u05d4 \u05d4\u05e0\u05d5\u05db\u05d7\u05d9\u05ea.</div>`;
+      return;
+    }
+    ensureSortState();
+    const letters = visibleColumnLetters();
+    const allVisibleSelected = !!visible.length && visible.every((row) => state.selectedRowIds.has(row.id));
+    const someVisibleSelected = visible.some((row) => state.selectedRowIds.has(row.id));
+    const headHtml = letters.map((letter) => {
+      const active = state.sortLetter === letter;
+      const headerLabel = App.escapeHtml(headerForLetter(letter));
+      const filterActive = !!String(state.filters[letter] || '').trim();
+      const menuOpen = state.openColumnMenuLetter === letter;
+      const sortClass = `${active ? ' active' : ''}${active ? (state.sortDirection === 'desc' ? ' is-desc' : ' is-asc') : ''}`;
+      const menuClass = `${filterActive ? ' filtered' : ''}${menuOpen ? ' open' : ''}`;
+      const menuButtonLabel = `\u05e1\u05d9\u05e0\u05d5\u05df \u05e2\u05de\u05d5\u05d3\u05d4 ${headerLabel}`;
+      const menuGlyph = filterActive ? '<span class="th-filter-dot">\u25cf</span>' : '&#9662;';
+      const menuHtml = menuOpen ? renderColumnMenu(letter) : '';
+      return [
+        `<th data-col-letter="${letter}">`,
+        '  <div class="th-shell">',
+        `    <button type="button" class="th-sort-btn${sortClass}" data-sort-letter="${letter}">`,
+        `      <span class="th-sort-label">${headerLabel}</span>`,
+        '    </button>',
+        `    <button type="button" class="th-menu-btn${menuClass}" data-filter-menu-button="${letter}" aria-label="${menuButtonLabel}">`,
+        `      ${menuGlyph}`,
+        '    </button>',
+        `    ${menuHtml}`,
+        '  </div>',
+        '</th>',
+      ].join('');
+    }).join('');
+    const actionHeadHtml = `
+      <th class="action-col">
+        <div class="action-head">
+          <label class="row-select-toggle" title="\u05d1\u05d7\u05d9\u05e8\u05ea \u05db\u05dc \u05d4\u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05e9\u05de\u05d5\u05e6\u05d2\u05d5\u05ea \u05db\u05e2\u05ea">
+            <input type="checkbox" data-select-visible="1"${allVisibleSelected ? ' checked' : ''}${someVisibleSelected && !allVisibleSelected ? ' data-indeterminate="1"' : ''}>
+            <span>\u05e4\u05e2\u05d5\u05dc\u05d5\u05ea</span>
+          </label>
+        </div>
+      </th>
+    `;
+    const bodyHtml = visible.map((row) => {
+      const rowEditing = isRowEditing(row);
+      const cellsHtml = letters.map((letter) => {
+        const editableClass = canEditCellInTable(row, letter) ? ' td-editable' : '';
+        return `<td data-col-letter="${letter}" class="${editableClass.trim()}">${buildCellControl(row, letter, valueForLetter(row, letter))}</td>`;
+      }).join('');
+      const rowSelected = isRowSelected(row.id);
+      const actionButtons = `
+        <td class="action-col action-cell">
+          <div class="row-actions">
+            <label class="row-select-toggle" title="\u05d1\u05d7\u05d9\u05e8\u05ea \u05e8\u05e9\u05d5\u05de\u05d4 \u05dc\u05e2\u05e8\u05d9\u05db\u05d4 \u05de\u05e8\u05d5\u05d1\u05d4">
+              <input type="checkbox" data-row-select="${App.escapeHtml(row.id)}"${rowSelected ? ' checked' : ''}>
+            </label>
+            <button type="button" class="row-action-btn" data-row-action="edit" data-row-id="${App.escapeHtml(row.id)}" title="${rowEditing ? '\u05e1\u05d2\u05d5\u05e8 \u05e2\u05e8\u05d9\u05db\u05ea \u05e9\u05d5\u05e8\u05d4' : '\u05e2\u05e8\u05d5\u05da \u05e9\u05d5\u05e8\u05d4'}" aria-label="${rowEditing ? '\u05e1\u05d2\u05d5\u05e8 \u05e2\u05e8\u05d9\u05db\u05ea \u05e9\u05d5\u05e8\u05d4' : '\u05e2\u05e8\u05d5\u05da \u05e9\u05d5\u05e8\u05d4'}"><i class="fas ${rowEditing ? 'fa-check' : 'fa-edit'}" aria-hidden="true"></i></button>
+            <button type="button" class="row-action-btn" data-row-action="duplicate" data-row-id="${App.escapeHtml(row.id)}" title="\u05e9\u05db\u05e4\u05dc \u05e9\u05d5\u05e8\u05d4" aria-label="\u05e9\u05db\u05e4\u05dc \u05e9\u05d5\u05e8\u05d4"><i class="fas fa-copy" aria-hidden="true"></i></button>
+            <button type="button" class="row-action-btn danger" data-row-action="remove" data-row-id="${App.escapeHtml(row.id)}" title="\u05de\u05d7\u05e7 \u05e9\u05d5\u05e8\u05d4" aria-label="\u05de\u05d7\u05e7 \u05e9\u05d5\u05e8\u05d4"><i class="fas fa-trash" aria-hidden="true"></i></button>
+          </div>
+        </td>
+      `;
+      const rowClasses = [
+        rowUpdatedForCurrentDate(row) ? 'row-session-updated' : 'row-session-idle',
+        row.isNew ? 'row-new' : '',
+        isRowDirty(row) ? 'row-dirty' : '',
+        rowEditing ? 'row-editing' : '',
+        rowSelected ? 'row-selected' : ''
+      ].filter(Boolean).join(' ');
+      return `<tr class="${rowClasses}" data-row-id="${App.escapeHtml(row.id)}">${actionButtons}${cellsHtml}</tr>`;
+    }).join('');
+    const tableHeaderHtml = `
+      <div class="table-grid-head">
+        <div class="table-grid-summary">
+          <strong>${App.formatNumber(visible.length)}</strong>
+          <span>רשומות בתצוגה</span>
+        </div>
+        <div class="table-grid-badges">
+          <span class="table-grid-badge">${App.formatNumber(updatedVisibleCount)} עודכנו היום</span>
+          <span class="table-grid-badge${selectedVisibleCount ? ' is-active' : ''}">${App.formatNumber(selectedVisibleCount)} נבחרו</span>
+          <span class="table-grid-badge${dirtyVisibleCount ? ' is-warn' : ''}">${App.formatNumber(dirtyVisibleCount)} שינויים</span>
+          <span class="table-grid-badge${newVisibleCount ? ' is-info' : ''}">${App.formatNumber(newVisibleCount)} חדשות</span>
+        </div>
+      </div>
+    `;
+    host.innerHTML = `
+      <div class="table-grid-shell">
+        ${tableHeaderHtml}
+        <div class="table-grid-scroll">
+          <table class="attendance-table">
+            <thead>
+              <tr>${actionHeadHtml}${headHtml}</tr>
+            </thead>
+            <tbody>${bodyHtml}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    const selectVisible = host.querySelector('input[data-select-visible="1"]');
+    if (selectVisible) {
+      selectVisible.indeterminate = someVisibleSelected && !allVisibleSelected;
+    }
+    applyFrozenColumnsLayout();
+  }
+
+  function resetRowsForDate() {
+    state.rows.forEach((row) => {
+      row.originalCells = row.baseCells.slice();
+      row.currentCells = row.baseCells.slice();
+      row.listItemId = 0;
+      row.updatedForDate = false;
+      row.rowKey = row.excelRow ? buildRowKey(row.baseCells, row.excelRow) : row.rowKey;
+      clearRowSearchCaches(row);
+      refreshRowDirtyState(row);
+    });
+    state.existingByRowKey = new Map();
+    touchRows();
+  }
+
+  function recordToCells(record) {
+    return App.recordToCells(record, App.getStaticConfig().workbook.columnCount);
+  }
+
+  async function loadDateRecords() {
+    resetRowsForDate();
+    const dateKey = App.normalizeDateKey(state.selectedDate);
+    const updatedExcelRows = new Set();
+    const updatedRowKeys = new Set();
+    try {
+      const records = await App.loadAttendanceRecordsForDate(dateKey, App.getStaticConfig().workbook.columnCount);
+      records.forEach((record) => {
+        const excelRow = Number(record && (record.ExcelRowNumber || record.excelRow || 0));
+        const rowKey = String(record && (record.PersonKey || record.rowKey || '') || '').trim();
+        if (excelRow) updatedExcelRows.add(excelRow);
+        if (rowKey) updatedRowKeys.add(rowKey);
+      });
+    } catch (error) {}
+    if (!updatedExcelRows.size && !updatedRowKeys.size) {
+      const auditHeaders = App.buildAuditHeaders(state.headers, App.getStaticConfig().workbook.columnCount);
+      const matrix = App.getSheetMatrix(state.workbook, App.getStaticConfig().workbook.auditSheet, auditHeaders.length);
+      for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+        const record = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+        if (App.normalizeDateKey(record[1] || '') !== dateKey) continue;
+        const excelRow = Number(record[5] || 0);
+        const rowKey = String(record[6] || '').trim();
+        if (excelRow) updatedExcelRows.add(excelRow);
+        if (rowKey) updatedRowKeys.add(rowKey);
+      }
+    }
+    let updatedCount = 0;
+    state.rows.forEach((row) => {
+      const rowKey = row.excelRow ? buildRowKey(row.currentCells, row.excelRow) : '';
+      row.updatedForDate = updatedExcelRows.has(row.excelRow) || (!!rowKey && updatedRowKeys.has(rowKey));
+      if (row.updatedForDate) updatedCount += 1;
+    });
+    return updatedCount;
+  }
+
+
+  async function loadAllDataFromList() {
+    try {
+      // Ensure the SharePoint list and its columns are ready for use.
+      await App.ensureAttendanceListReady([], App.getStaticConfig().workbook.columnCount);
+      await App.ensureSourceListReady([], App.getStaticConfig().workbook.columnCount);
+
+      if (!state.selection.dateKey) state.selection.dateKey = App.todayKey();
+      state.selectedDate = state.selection.dateKey;
+      state.currentUser = await App.getCurrentUser();
+
+      // Set default/empty values for workbook-related state to bypass Excel logic.
+      state.workbookInfo = { fileName: 'רשימת SharePoint' };
+      state.workbook = null;
+      state.masterWorkbookUrl = '';
+      state.copyInfo = { isListSource: true };
+      
+      // Generate default headers since there is no Excel file to read them from.
+      const columnCount = App.getStaticConfig().workbook.columnCount;
+      state.headers = App.resolveSourceHeaders(state.settings, columnCount);
+      
+      // Load the attendance records for the selected date from the SharePoint list.
+      let records = await App.loadAttendanceRecordsForDate(state.selectedDate, columnCount);
+      let seededFromSource = false;
+      if (!records.length) {
+        const seedResult = await App.seedAttendanceRecordsFromSource(state.selectedDate, {
+          headers: state.headers,
+          columnCount,
+          currentUser: state.currentUser
+        });
+        seededFromSource = !!seedResult.seeded;
+        if (seededFromSource) {
+          records = await App.loadAttendanceRecordsForDate(state.selectedDate, columnCount);
+        }
+      }
+
+      // Transform the SharePoint list items into the 'state.rows' structure the app uses.
+      state.rows = records.map((record, index) => {
+        const cells = recordToCells(record);
+        const excelRow = Number(record.ExcelRowNumber || (index + 2));
+        const row = {
+          id: String(record.Id),
+          excelRow: excelRow,
+          baseCells: cells,
+          originalCells: cells.slice(),
+          currentCells: cells.slice(),
+          isNew: false,
+          isDirty: false,
+          updatedForDate: true, // By definition, it came from the list for this date
+          listItemId: record.Id,
+          rowKey: String(record.PersonKey || ''),
+          searchText: '',
+          searchGroup: '',
+        };
+        clearRowSearchCaches(row);
+        refreshRowDirtyState(row);
+        return row;
+      });
+
+      // Populate the map for existing rows.
+      state.existingByRowKey = new Map();
+      state.rows.forEach(row => {
+        if (row.rowKey) state.existingByRowKey.set(row.rowKey, row);
+      });
+
+      // Load dropdown options and render the complete UI.
+      loadDropdownOptions();
+      state.lastLoadedAt = new Date();
+      renderAll();
+      setStatus(
+        seededFromSource
+          ? `המאגר הראשי הועתק לתאריך ${App.formatDateLabel(state.selectedDate)} והוצגו ${App.formatNumber(state.rows.length)} רשומות.`
+          : `הוצגו ${App.formatNumber(state.rows.length)} רשומות מהרשימה בתאריך זה.`,
+        'ok'
+      );
+
+    } catch (listError) {
+      setStatus(listError.message || 'שגיאה בטעינת הנתונים מרשימת SharePoint.', 'err');
+    }
+  }
+
+  async function loadAllData() {
+    setBusy(true);
+    try {
+      const settingsResult = await App.loadManagementSettings({ preferCache: true });
+      state.settings = settingsResult.settings;
+      state.settingsSource = String(settingsResult.source || '').trim();
+      state.settingsWarning = String(settingsResult.warning || '').trim();
+      const workbookUrl = App.resolveWorkbookUrl(state.settings);
+      if (!workbookUrl) {
+        await loadAllDataFromList();
+        return;
+      }
+      state.phonebookWorkbookUrl = '';
+      state.phonebookHeaders = [];
+      state.phonebookSourceRows = [];
+      state.phonebookSourceVersion = 0;
+      if (!state.selection.dateKey) state.selection.dateKey = App.todayKey();
+      state.selectedDate = state.selection.dateKey;
+      const [currentUser, session] = await Promise.all([
+        App.getCurrentUser(),
+        App.prepareWorkbookForAttendance(state.settings, state.selectedDate)
+      ]);
+      state.currentUser = currentUser;
+      state.workbookInfo = session.activeInfo;
+      state.workbook = session.activeInfo.workbook;
+      state.masterWorkbookUrl = session.masterInfo.sourceUrl;
+      state.copyInfo = session.copyInfo;
+      loadMainRows();
+      loadDropdownOptions();
+      const updatedForDateCount = await loadDateRecords();
+      state.lastLoadedAt = new Date();
+      renderAll();
+      const copyNote = state.copyInfo && state.copyInfo.isDateCopy
+        ? (state.copyInfo.created ? ' \u05e0\u05d5\u05e6\u05e8 \u05e2\u05d5\u05ea\u05e7 \u05ea\u05d0\u05e8\u05d9\u05da \u05d7\u05d3\u05e9.' : ' \u05e0\u05d8\u05e2\u05df \u05e2\u05d5\u05ea\u05e7 \u05d4\u05ea\u05d0\u05e8\u05d9\u05da \u05d4\u05e7\u05d9\u05d9\u05dd.')
+        : '';
+      const updateNote = ` סומנו ${App.formatNumber(updatedForDateCount)} רשומות שכבר עודכנו בתאריך זה.`;
+      setStatus(`\u05d4\u05e7\u05d5\u05d1\u05e5 ${state.workbookInfo.fileName} \u05e0\u05d8\u05e2\u05df \u05de\u05ea\u05d5\u05da Excel \u05d4\u05e4\u05e2\u05d9\u05dc.${copyNote}${updateNote}`, 'ok');
+    } catch (error) {
+      setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05d8\u05e2\u05d9\u05e0\u05ea \u05d4\u05de\u05e1\u05da.', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function renderAddRowForm() {
+    const host = byId('addRowFields');
+    const defaultGroupValues = selectedGroupSelections().length === 1 ? primaryGroupSelection() : {};
+    host.innerHTML = state.settings.addRowColumns.map((letter) => {
+      const label = `${headerForLetter(letter)} (${letter})`;
+      const preset = defaultGroupValues[letter] || '';
+      const options = state.dropdownOptions[letter];
+      if (Array.isArray(options) && options.length) {
+        const html = ['<option value=""></option>']
+          .concat(options.map((value) => `<option value="${App.escapeHtml(value)}"${value === preset ? ' selected' : ''}>${App.escapeHtml(value)}</option>`))
+          .join('');
+        return `
+          <div class="field">
+            <label for="add-${letter}">${App.escapeHtml(label)}</label>
+            <select id="add-${letter}" data-add-letter="${letter}">${html}</select>
+          </div>
+        `;
+      }
+      return `
+        <div class="field">
+          <label for="add-${letter}">${App.escapeHtml(label)}</label>
+          <input id="add-${letter}" data-add-letter="${letter}" value="${App.escapeHtml(preset)}">
+        </div>
+      `;
+    }).join('');
+  }
+
+  function openAddRowDialog() {
+    if (!canAddRowInCurrentScope()) {
+      setStatus('\u05db\u05d3\u05d9 \u05dc\u05d4\u05d5\u05e1\u05d9\u05e3 \u05e9\u05d5\u05e8\u05d4 \u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05e7\u05d1\u05d5\u05e6\u05d4 \u05d0\u05d7\u05ea \u05d0\u05d5 \u05dc\u05d4\u05d9\u05db\u05e0\u05e1 \u05db\u05de\u05e0\u05d4\u05dc.', 'warn');
+      return;
+    }
+    renderAddRowForm();
+    byId('addRowDialog').showModal();
+  }
+
+  function closeAddRowDialog() {
+    byId('addRowDialog').close();
+  }
+
+  function addRowFromDialog() {
+    const cells = buildQuickAddCells();
+    state.settings.addRowColumns.forEach((letter) => {
+      const index = App.columnLetterToIndex(letter);
+      if (index < 0) return;
+      const field = byId(`add-${letter}`);
+      if (!field) return;
+      cells[index] = String(field.value || '');
+    });
+    if (!cells.some((cell) => String(cell || '').trim())) {
+      setStatus('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d4\u05d5\u05e1\u05d9\u05e3 \u05e9\u05d5\u05e8\u05d4 \u05e8\u05d9\u05e7\u05d4.', 'warn');
+      return;
+    }
+    closeAddRowDialog();
+    insertDraftRow(cells, {
+      statusMessage: '\u05e0\u05d5\u05e1\u05e4\u05d4 \u05e9\u05d5\u05e8\u05d4 \u05d7\u05d3\u05e9\u05d4. \u05d0\u05e4\u05e9\u05e8 \u05dc\u05d4\u05de\u05e9\u05d9\u05da \u05dc\u05e2\u05e8\u05d5\u05da \u05d0\u05d5\u05ea\u05d4 \u05d1\u05d8\u05d1\u05dc\u05d4 \u05d5\u05dc\u05e9\u05de\u05d5\u05e8 \u05db\u05e9\u05ea\u05d9\u05d4 \u05de\u05d5\u05db\u05e0\u05d4.'
+    });
+  }
+
+  function bulkEditableRows() {
+    return state.rows.filter((row) => state.selectedRowIds.has(row.id));
+  }
+
+  function renderBulkEditValueField() {
+    const host = byId('bulkEditValueWrap');
+    if (!host) return;
+    const letter = App.normalizeColumnLetter(byId('bulkEditColumn').value || '');
+    const label = letter ? headerForLetter(letter) : '';
+    const options = state.dropdownOptions[letter];
+    if (!letter) {
+      host.innerHTML = '<div class="field"><label>\u05e2\u05e8\u05da \u05d7\u05d3\u05e9</label><input id="bulkEditValue" disabled value=""></div>';
+      return;
+    }
+    if (Array.isArray(options) && options.length) {
+      const optionHtml = ['<option value=""></option>']
+        .concat(options.map((value) => `<option value="${App.escapeHtml(value)}">${App.escapeHtml(value)}</option>`))
+        .join('');
+      host.innerHTML = `
+        <div class="field">
+          <label for="bulkEditValue">\u05e2\u05e8\u05da \u05d7\u05d3\u05e9 \u05e2\u05d1\u05d5\u05e8 ${App.escapeHtml(label)}</label>
+          <select id="bulkEditValue">${optionHtml}</select>
+        </div>
+      `;
+      return;
+    }
+    host.innerHTML = `
+      <div class="field">
+        <label for="bulkEditValue">\u05e2\u05e8\u05da \u05d7\u05d3\u05e9 \u05e2\u05d1\u05d5\u05e8 ${App.escapeHtml(label)}</label>
+        <input id="bulkEditValue" value="">
+      </div>
+    `;
+  }
+
+  function openBulkEditDialog() {
+    const rows = bulkEditableRows();
+    if (!rows.length) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05dc\u05e4\u05d7\u05d5\u05ea \u05e8\u05e9\u05d5\u05de\u05d4 \u05d0\u05d7\u05ea \u05dc\u05e2\u05e8\u05d9\u05db\u05d4 \u05de\u05e8\u05d5\u05d1\u05d4.', 'warn');
+      return;
+    }
+    const select = byId('bulkEditColumn');
+    const editableSet = new Set(isAdminMode() ? visibleColumnLetters() : state.settings.editableColumns);
+    select.innerHTML = state.headers
+      .map((_, index) => App.indexToColumnLetter(index))
+      .filter((letter) => editableSet.has(letter))
+      .map((letter) => `<option value="${letter}">${App.escapeHtml(headerForLetter(letter))} (${letter})</option>`)
+      .join('');
+    if (!select.value) select.value = select.options[0] ? select.options[0].value : '';
+    byId('bulkEditCount').textContent = `\u05e0\u05d1\u05d7\u05e8\u05d5 ${App.formatNumber(rows.length)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05dc\u05e2\u05e8\u05d9\u05db\u05d4 \u05de\u05e9\u05d5\u05ea\u05e4\u05ea.`;
+    renderBulkEditValueField();
+    byId('bulkEditDialog').showModal();
+  }
+
+  function closeBulkEditDialog() {
+    byId('bulkEditDialog').close();
+  }
+
+  function applyBulkEdit() {
+    const letter = App.normalizeColumnLetter(byId('bulkEditColumn').value || '');
+    const valueField = byId('bulkEditValue');
+    const value = valueField ? String(valueField.value || '') : '';
+    if (!letter) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05e2\u05de\u05d5\u05d3\u05d4 \u05dc\u05e2\u05e8\u05d9\u05db\u05d4 \u05de\u05e8\u05d5\u05d1\u05d4.', 'warn');
+      return;
+    }
+    const rows = bulkEditableRows().filter((row) => isEditable(letter, row));
+    if (!rows.length) {
+      setStatus('\u05d0\u05d9\u05df \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05e0\u05d1\u05d7\u05e8\u05d5\u05ea \u05e9\u05e0\u05d9\u05ea\u05df \u05dc\u05e2\u05d3\u05db\u05df \u05d1\u05e2\u05de\u05d5\u05d3\u05d4 \u05d4\u05d6\u05d5.', 'warn');
+      return;
+    }
+    rows.forEach((row) => {
+      const index = App.columnLetterToIndex(letter);
+      if (index < 0) return;
+      row.currentCells[index] = value;
+      clearRowSearchCaches(row);
+      refreshRowDirtyState(row);
+    });
+    touchRows();
+    closeBulkEditDialog();
+    renderAll();
+    scheduleAutoSave();
+    setStatus(`\u05e2\u05d5\u05d3\u05db\u05e0\u05d5 ${App.formatNumber(rows.length)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05d1\u05d1\u05ea \u05d0\u05d7\u05ea.`, 'ok');
+  }
+
+  function updateCell(rowId, letter, value) {
+    const row = state.rows.find((item) => item.id === rowId);
+    const index = App.columnLetterToIndex(letter);
+    if (!row || index < 0) return;
+    const nextValue = String(value || '');
+    if (row.currentCells[index] === nextValue) return;
+    row.currentCells[index] = nextValue;
+    clearRowSearchCaches(row);
+    refreshRowDirtyState(row);
+    touchRows();
+    renderInfoBar();
+    const rowEl = byId('recordsBoard').querySelector(`tr[data-row-id="${row.id}"]`);
+    if (rowEl) {
+      rowEl.classList.toggle('row-session-updated', rowUpdatedForCurrentDate(row));
+      rowEl.classList.toggle('row-session-idle', !rowUpdatedForCurrentDate(row));
+      rowEl.classList.toggle('row-dirty', isRowDirty(row));
+      rowEl.classList.toggle('row-new', !!row.isNew);
+    }
+    if (byId('phoneDialog').open) renderPhonebookDialog();
+  }
+
+  function toggleSort(letter, forcedDirection) {
+    const normalized = App.normalizeColumnLetter(letter);
+    if (!normalized) return;
+    if (forcedDirection === 'asc' || forcedDirection === 'desc') {
+      state.sortLetter = normalized;
+      state.sortDirection = forcedDirection;
+    } else if (state.sortLetter === normalized) {
+      state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+      state.sortLetter = normalized;
+      state.sortDirection = 'asc';
+    }
+    state.openColumnMenuLetter = '';
+    clearViewCaches();
+    renderRecords();
+    if (byId('phoneDialog').open) renderPhonebookDialog();
+  }
+
+  function buildSaveRecords(existingRowNumbers) {
+    const config = App.getStaticConfig();
+    const usingWorkbook = !!state.workbook;
+    const editableIndexes = isAdminMode()
+      ? Array.from({ length: config.workbook.columnCount }, (_, index) => index)
+      : state.settings.editableColumns.map(App.columnLetterToIndex).filter((index) => index >= 0);
+    const dirty = dirtyRows();
+    const records = [];
+    dirty.forEach((row) => {
+      const wasNew = row.isNew;
+      const previousId = row.id;
+      const preserveSelection = state.selectedRowIds.has(previousId);
+      const preserveEditing = state.editingRowId === previousId;
+      if (wasNew) {
+        const workbookCells = row.currentCells.slice();
+        const nextRowNumber = usingWorkbook
+          ? (App.getSheetLastRow(state.workbook, config.workbook.mainSheet) + 1)
+          : (Math.max(1, ...state.rows.map((item) => Number(item && item.excelRow || 0)), ...state.deletedRows.map((item) => Number(item && item.excelRow || 0))) + 1);
+        if (usingWorkbook) {
+          App.writeRowsToSheet(state.workbook, config.workbook.mainSheet, [workbookCells], { r: nextRowNumber - 1, c: 0 });
+        }
+        row.excelRow = nextRowNumber;
+        row.id = `row-${nextRowNumber}`;
+        row.isNew = false;
+        row.baseCells = workbookCells.slice();
+      } else if (usingWorkbook) {
+        editableIndexes.forEach((index) => {
+          App.writeRowsToSheet(state.workbook, config.workbook.mainSheet, [[row.currentCells[index]]], { r: row.excelRow - 1, c: index });
+          row.baseCells[index] = row.currentCells[index];
+        });
+      } else {
+        row.baseCells = row.currentCells.slice();
+      }
+      row.rowKey = buildRowKey(row.currentCells, row.excelRow);
+      refreshRowDirtyState(row);
+      existingRowNumbers.add(row.excelRow);
+      records.push({
+        rowRef: row,
+        previousId,
+        preserveSelection,
+        preserveEditing,
+        excelRow: row.excelRow,
+        rowKey: row.rowKey,
+        unitName: App.buildCompositeValue(row.currentCells, state.settings.groupColumns, ' | ').text,
+        cells: row.currentCells.slice(),
+        listItemId: Number(row.listItemId || 0),
+        wasNew,
+        editableIndexes: editableIndexes.slice()
+      });
+    });
+    return records;
+  }
+
+  function applyRecordsToWorkbook(workbook, records) {
+    const config = App.getStaticConfig();
+    records.forEach((record) => {
+      if (record.wasNew) {
+        App.writeRowsToSheet(workbook, config.workbook.mainSheet, [record.cells.slice()], { r: Math.max(0, Number(record.excelRow || 1) - 1), c: 0 });
+        return;
+      }
+      (record.editableIndexes || []).forEach((index) => {
+        App.writeRowsToSheet(workbook, config.workbook.mainSheet, [[record.cells[index]]], { r: Math.max(0, Number(record.excelRow || 1) - 1), c: index });
+      });
+    });
+  }
+
+  function applyDeletedRowsToWorkbook(workbook, deletedRows) {
+    if (!workbook) return;
+    const config = App.getStaticConfig();
+    (deletedRows || []).forEach((row) => {
+      const excelRow = Number(row && row.excelRow || 0);
+      if (!excelRow) return;
+      App.writeRowsToSheet(workbook, config.workbook.mainSheet, [buildEmptyCells()], { r: Math.max(0, excelRow - 1), c: 0 });
+    });
+  }
+
+  function cloneForwardSyncRecord(record) {
+    const config = App.getStaticConfig();
+    const cells = Array.isArray(record && record.cells) ? record.cells.slice(0, config.workbook.columnCount) : [];
+    while (cells.length < config.workbook.columnCount) cells.push('');
+    return {
+      excelRow: Number(record && record.excelRow || 0),
+      rowKey: String(record && record.rowKey || '').trim(),
+      personId: String(cells[COL_PERSON_ID] || '').trim(),
+      wasNew: !!(record && record.wasNew),
+      cells
+    };
+  }
+
+  function cloneForwardSyncDeletedRow(row) {
+    const config = App.getStaticConfig();
+    const cells = Array.isArray(row && row.cells) ? row.cells.slice(0, config.workbook.columnCount) : [];
+    while (cells.length < config.workbook.columnCount) cells.push('');
+    return {
+      excelRow: Number(row && row.excelRow || 0),
+      rowKey: String(row && row.rowKey || '').trim(),
+      personId: String(cells[COL_PERSON_ID] || '').trim(),
+      cells
+    };
+  }
+
+  function buildForwardSyncDates(dateKey, settings) {
+    const safeDateKey = App.normalizeDateKey(dateKey);
+    if (!safeDateKey) return [];
+    return App.normalizeOpenDates(settings && settings.openDates || [])
+      .filter((candidate) => candidate > safeDateKey);
+  }
+
+  function buildForwardSyncPayload(records, deletedRows, options) {
+    const futureDates = buildForwardSyncDates(state.selectedDate, state.settings);
+    const syncEdits = state.forwardSyncEnabled !== false;
+    const safeRecords = (Array.isArray(records) ? records : [])
+      .map(cloneForwardSyncRecord)
+      .filter((record) => record.wasNew || syncEdits)
+      .filter((record) => record.cells.some((cell) => String(cell || '').trim()));
+    const safeDeletedRows = (Array.isArray(deletedRows) ? deletedRows : [])
+      .map(cloneForwardSyncDeletedRow)
+      .filter((row) => row.excelRow || row.personId || row.rowKey);
+    if (!futureDates.length || (!safeRecords.length && !safeDeletedRows.length)) return null;
+    return {
+      auto: !!(options && options.auto),
+      sourceDateKey: state.selectedDate,
+      futureDates,
+      editableColumns: Array.isArray(state.settings.editableColumns) ? state.settings.editableColumns.slice() : [],
+      settings: App.normalizeSettings(state.settings),
+      records: safeRecords,
+      deletedRows: safeDeletedRows
+    };
+  }
+
+  function scheduleQueuedForwardSync(delayMs) {
+    if (state.forwardSyncTimer) window.clearTimeout(state.forwardSyncTimer);
+    state.forwardSyncTimer = window.setTimeout(() => {
+      state.forwardSyncTimer = 0;
+      runQueuedForwardSync();
+    }, Math.max(0, Number(delayMs || 0)));
+  }
+
+  function queueForwardSync(records, deletedRows, options) {
+    const payload = buildForwardSyncPayload(records, deletedRows, options);
+    if (!payload) {
+      state.forwardSyncPending = null;
+      if (state.forwardSyncTimer) {
+        window.clearTimeout(state.forwardSyncTimer);
+        state.forwardSyncTimer = 0;
+      }
+      return null;
+    }
+    state.forwardSyncPending = payload;
+    if (state.forwardSyncRunning) return payload;
+    scheduleQueuedForwardSync(payload.auto ? FORWARD_SYNC_AUTO_DELAY_MS : FORWARD_SYNC_MANUAL_DELAY_MS);
+    return payload;
+  }
+
+  function buildFutureWorkbookIndex(workbook) {
+    const config = App.getStaticConfig();
+    const matrix = App.getSheetMatrix(workbook, config.workbook.mainSheet, config.workbook.columnCount);
+    const byExcelRow = new Map();
+    const byPersonId = new Map();
+    for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+      const excelRow = rowIndex + 1;
+      const source = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const cells = buildEmptyCells();
+      for (let colIndex = 0; colIndex < config.workbook.columnCount; colIndex += 1) {
+        cells[colIndex] = String(source[colIndex] || '');
+      }
+      if (!cells.some((cell) => String(cell || '').trim())) continue;
+      const row = { excelRow, cells };
+      byExcelRow.set(excelRow, row);
+      const personId = String(cells[COL_PERSON_ID] || '').trim();
+      if (!personId) continue;
+      if (!byPersonId.has(personId)) byPersonId.set(personId, []);
+      byPersonId.get(personId).push(row);
+    }
+    return { byExcelRow, byPersonId };
+  }
+
+  function findFutureWorkbookRow(index, record) {
+    const personId = String(record && record.personId || '').trim();
+    const excelRow = Number(record && record.excelRow || 0);
+    if (!record.wasNew && excelRow && index.byExcelRow.has(excelRow)) {
+      return { row: index.byExcelRow.get(excelRow), ambiguous: false };
+    }
+    if (personId) {
+      const matches = index.byPersonId.get(personId) || [];
+      if (matches.length === 1) return { row: matches[0], ambiguous: false };
+      if (matches.length > 1) {
+        const exactRow = excelRow ? index.byExcelRow.get(excelRow) : null;
+        if (exactRow && String(exactRow.cells[COL_PERSON_ID] || '').trim() === personId) {
+          return { row: exactRow, ambiguous: false };
+        }
+        return { row: null, ambiguous: true };
+      }
+    }
+    if (excelRow && index.byExcelRow.has(excelRow)) {
+      return { row: index.byExcelRow.get(excelRow), ambiguous: false };
+    }
+    return { row: null, ambiguous: false };
+  }
+
+  function rememberFutureWorkbookRow(index, excelRow, cells) {
+    const row = {
+      excelRow: Number(excelRow || 0),
+      cells: cells.slice()
+    };
+    if (!row.excelRow) return row;
+    index.byExcelRow.set(row.excelRow, row);
+    const personId = String(cells[COL_PERSON_ID] || '').trim();
+    if (personId) {
+      if (!index.byPersonId.has(personId)) index.byPersonId.set(personId, []);
+      const matches = index.byPersonId.get(personId);
+      if (!matches.some((item) => Number(item.excelRow || 0) === row.excelRow)) matches.push(row);
+    }
+    return row;
+  }
+
+  function forgetFutureWorkbookRow(index, row) {
+    if (!index || !row) return;
+    const excelRow = Number(row.excelRow || 0);
+    if (excelRow) index.byExcelRow.delete(excelRow);
+    const personId = String(row.cells && row.cells[COL_PERSON_ID] || '').trim();
+    if (!personId || !index.byPersonId.has(personId)) return;
+    const next = (index.byPersonId.get(personId) || []).filter((item) => Number(item.excelRow || 0) !== excelRow);
+    if (next.length) index.byPersonId.set(personId, next);
+    else index.byPersonId.delete(personId);
+  }
+
+  function buildForwardSyncEditableIndexes(editableColumns) {
+    return App.normalizeColumnList(editableColumns, [])
+      .map((letter) => App.columnLetterToIndex(letter))
+      .filter((index) => index >= 0);
+  }
+
+  function buildForwardSyncMergedCells(sourceCells, targetCells, editableIndexes) {
+    const next = sourceCells.slice();
+    (editableIndexes || []).forEach((index) => {
+      if (index < 0 || index >= next.length) return;
+      next[index] = String(targetCells && targetCells[index] || '');
+    });
+    return next;
+  }
+
+  function applyForwardSyncRecordsToWorkbook(workbook, records, editableColumns) {
+    const config = App.getStaticConfig();
+    const worksheet = workbook && workbook.Sheets ? workbook.Sheets[config.workbook.mainSheet] || null : null;
+    const index = buildFutureWorkbookIndex(workbook);
+    const editableIndexes = buildForwardSyncEditableIndexes(editableColumns);
+    const summary = {
+      changed: false,
+      updatedRows: 0,
+      addedRows: 0,
+      skippedRows: 0
+    };
+    (Array.isArray(records) ? records : []).forEach((record) => {
+      const lookup = findFutureWorkbookRow(index, record);
+      if (lookup.ambiguous) {
+        summary.skippedRows += 1;
+        return;
+      }
+      if (lookup.row) {
+        const mergedCells = buildForwardSyncMergedCells(record.cells, lookup.row.cells, editableIndexes);
+        if (!rowCellsDiffer(lookup.row.cells, mergedCells)) return;
+        const nextCells = lookup.row.cells.slice();
+        let rowChanged = false;
+        for (let colIndex = 0; colIndex < mergedCells.length; colIndex += 1) {
+          if (nextCells[colIndex] === mergedCells[colIndex]) continue;
+          const cellRef = XLSX.utils.encode_cell({ r: Math.max(0, lookup.row.excelRow - 1), c: colIndex });
+          const targetCell = worksheet ? worksheet[cellRef] : null;
+          if (targetCell && targetCell.f) continue;
+          App.writeRowsToSheet(workbook, config.workbook.mainSheet, [[mergedCells[colIndex]]], { r: Math.max(0, lookup.row.excelRow - 1), c: colIndex });
+          nextCells[colIndex] = mergedCells[colIndex];
+          rowChanged = true;
+        }
+        if (!rowChanged) return;
+        lookup.row.cells = nextCells.slice();
+        const personId = String(lookup.row.cells[COL_PERSON_ID] || '').trim();
+        if (personId) {
+          const matches = index.byPersonId.get(personId) || [];
+          const current = matches.find((item) => Number(item.excelRow || 0) === lookup.row.excelRow);
+          if (current) current.cells = nextCells.slice();
+        }
+        summary.changed = true;
+        summary.updatedRows += 1;
+        return;
+      }
+      const preferredRow = Number(record.excelRow || 0);
+      const targetRow = preferredRow > 1 && !index.byExcelRow.has(preferredRow)
+        ? preferredRow
+        : (App.getSheetLastRow(workbook, config.workbook.mainSheet) + 1);
+      App.writeRowsToSheet(workbook, config.workbook.mainSheet, [record.cells.slice()], { r: Math.max(0, targetRow - 1), c: 0 });
+      rememberFutureWorkbookRow(index, targetRow, record.cells);
+      summary.changed = true;
+      summary.addedRows += 1;
+    });
+    return summary;
+  }
+
+  function applyForwardSyncDeletedRowsToWorkbook(workbook, deletedRows) {
+    const config = App.getStaticConfig();
+    const index = buildFutureWorkbookIndex(workbook);
+    const summary = {
+      changed: false,
+      removedRows: 0,
+      skippedRows: 0
+    };
+    (Array.isArray(deletedRows) ? deletedRows : []).forEach((deletedRow) => {
+      const lookup = findFutureWorkbookRow(index, deletedRow);
+      if (lookup.ambiguous) {
+        summary.skippedRows += 1;
+        return;
+      }
+      if (!lookup.row) return;
+      const blankCells = buildEmptyCells();
+      if (!rowCellsDiffer(lookup.row.cells, blankCells)) return;
+      App.writeRowsToSheet(workbook, config.workbook.mainSheet, [blankCells], { r: Math.max(0, lookup.row.excelRow - 1), c: 0 });
+      forgetFutureWorkbookRow(index, lookup.row);
+      summary.changed = true;
+      summary.removedRows += 1;
+    });
+    return summary;
+  }
+
+  function buildForwardSyncStatus(result) {
+    const parts = [];
+    if (result.changedDates) parts.push(`סונכרנו ${App.formatNumber(result.changedDates)} ימים פתוחים`);
+    if (result.updatedRows) parts.push(`${App.formatNumber(result.updatedRows)} שורות עודכנו`);
+    if (result.addedRows) parts.push(`${App.formatNumber(result.addedRows)} שורות נוספו`);
+    if (result.removedRows) parts.push(`${App.formatNumber(result.removedRows)} שורות נמחקו`);
+    if (result.skippedRows) parts.push(`${App.formatNumber(result.skippedRows)} שורות דולגו`);
+    return parts.join(' | ');
+  }
+
+  async function syncForwardDates(payload) {
+    const result = {
+      changedDates: 0,
+      updatedRows: 0,
+      addedRows: 0,
+      removedRows: 0,
+      skippedRows: 0,
+      failed: []
+    };
+    for (let index = 0; index < payload.futureDates.length; index += 1) {
+      const dateKey = payload.futureDates[index];
+      try {
+        const session = await App.prepareWorkbookForAttendance(payload.settings, dateKey);
+        const workbook = session && session.activeInfo ? session.activeInfo.workbook : null;
+        if (!workbook) throw new Error('לא נטען עותק היעד.');
+        const deleted = applyForwardSyncDeletedRowsToWorkbook(workbook, payload.deletedRows);
+        const applied = applyForwardSyncRecordsToWorkbook(workbook, payload.records, payload.editableColumns);
+        result.removedRows += deleted.removedRows;
+        result.updatedRows += applied.updatedRows;
+        result.addedRows += applied.addedRows;
+        result.skippedRows += applied.skippedRows + deleted.skippedRows;
+        if (!applied.changed && !deleted.changed) continue;
+        await App.saveWorkbookToSharePoint(session.activeInfo, workbook);
+        result.changedDates += 1;
+      } catch (error) {
+        result.failed.push({
+          dateKey,
+          message: String(error && error.message ? error.message : error)
+        });
+      }
+    }
+    return result;
+  }
+
+  async function runQueuedForwardSync() {
+    if (state.forwardSyncRunning) return;
+    const payload = state.forwardSyncPending;
+    if (!payload) return;
+    state.forwardSyncPending = null;
+    state.forwardSyncRunning = true;
+    const runId = ++state.forwardSyncRunId;
+    try {
+      const result = await syncForwardDates(payload);
+      if (state.forwardSyncPending || runId !== state.forwardSyncRunId) return;
+      if (result.failed.length) {
+        const failedDates = result.failed.slice(0, 3).map((item) => App.formatDateLabel(item.dateKey)).join(', ');
+        if (!state.busy) {
+          setStatus(`סנכרון קדימה חלקי: ${buildForwardSyncStatus(result) || 'לא בוצעו שינויים'} | נכשל עבור ${App.formatNumber(result.failed.length)} תאריכים: ${failedDates}`, 'warn');
+        }
+        return;
+      }
+      if (!payload.auto && result.changedDates && !state.busy && !hasPendingChanges()) {
+        setStatus(`הסנכרון קדימה הושלם. ${buildForwardSyncStatus(result)}.`, 'ok');
+      }
+    } catch (error) {
+      if (!state.forwardSyncPending && !state.busy) {
+        setStatus(`סנכרון קדימה נכשל. ${String(error && error.message ? error.message : error)}`, 'warn');
+      }
+    } finally {
+      state.forwardSyncRunning = false;
+      if (state.forwardSyncPending) {
+        scheduleQueuedForwardSync(state.forwardSyncPending.auto ? FORWARD_SYNC_AUTO_DELAY_MS : FORWARD_SYNC_MANUAL_DELAY_MS);
+      }
+    }
+  }
+
+  function scheduleAutoSave() {
+    if (!state.settings.openDates.includes(state.selectedDate)) return;
+    if (state.autoSaveTimer) window.clearTimeout(state.autoSaveTimer);
+    if (state.busy) {
+      state.autoSavePending = true;
+      return;
+    }
+    state.autoSaveTimer = window.setTimeout(() => {
+      state.autoSaveTimer = 0;
+      if (!hasPendingChanges()) return;
+      saveChanges({ auto: true });
+    }, 700);
+  }
+
+  async function saveChanges(options) {
+    const auto = !!(options && options.auto);
+    if (state.busy) {
+      if (auto) {
+        state.autoSavePending = true;
+        return;
+      }
+      return;
+    }
+    const dirty = dirtyRows();
+    const deletedRows = state.deletedRows.slice();
+    if (!dirty.length && !deletedRows.length) {
+      if (!auto) setStatus('\u05d0\u05d9\u05df \u05e9\u05d9\u05e0\u05d5\u05d9\u05d9\u05dd \u05dc\u05e9\u05de\u05d9\u05e8\u05d4.', 'warn');
+      return;
+    }
+    if (!state.settings.openDates.includes(state.selectedDate)) {
+      if (!auto) setStatus('\u05e9\u05de\u05d9\u05e8\u05d4 \u05dc\u05de\u05e4\u05e2\u05d9\u05dc \u05d0\u05e4\u05e9\u05e8\u05d9\u05ea \u05e8\u05e7 \u05d1\u05ea\u05d0\u05e8\u05d9\u05da \u05e4\u05ea\u05d5\u05d7.', 'err');
+      return;
+    }
+    if (state.autoSaveTimer) {
+      window.clearTimeout(state.autoSaveTimer);
+      state.autoSaveTimer = 0;
+    }
+    state.autoSavePending = false;
+    setBusy(true);
+    try {
+      const usingWorkbook = !!state.workbook && !!state.workbookInfo && App.hasWorkbookSource(state.settings);
+      let listWarning = '';
+      let forwardSyncPayload = null;
+      const existingRowNumbers = new Set();
+      const records = buildSaveRecords(existingRowNumbers);
+      records.forEach((record) => {
+        const previousId = String(record.previousId || '');
+        const nextId = String(record.rowRef && record.rowRef.id ? record.rowRef.id : '');
+        if (!previousId || !nextId || previousId === nextId) return;
+        const wasSelected = state.selectedRowIds.delete(previousId);
+        if (record.preserveSelection || wasSelected) state.selectedRowIds.add(nextId);
+        if (record.preserveEditing || state.editingRowId === previousId) state.editingRowId = nextId;
+      });
+      if (usingWorkbook) {
+        applyDeletedRowsToWorkbook(state.workbook, deletedRows);
+        await App.saveWorkbookToSharePoint(state.workbookInfo, state.workbook);
+      }
+      const listOptions = {
+        headers: state.headers,
+        columnCount: App.getStaticConfig().workbook.columnCount,
+        currentUser: state.currentUser,
+        isAdminEdit: isAdminMode(),
+        dateKey: state.selectedDate,
+        workbookUrl: state.workbookInfo && state.workbookInfo.sourceUrl ? state.workbookInfo.sourceUrl : ''
+      };
+      const syncList = async () => {
+        if (deletedRows.length) {
+          await App.deleteAttendanceRecords(deletedRows, listOptions);
+        }
+        if (records.length) {
+          await App.upsertAttendanceRecords(records, listOptions);
+        }
+      };
+      if (usingWorkbook) {
+        try {
+          await syncList();
+        } catch (listError) {
+          listWarning = String(listError && listError.message ? listError.message : listError);
+        }
+      } else {
+        await syncList();
+      }
+      state.rows.forEach((row) => {
+        if (existingRowNumbers.has(row.excelRow)) {
+          row.baseCells = row.currentCells.slice();
+          row.originalCells = row.currentCells.slice();
+          row.updatedForDate = true;
+          refreshRowDirtyState(row);
+        }
+      });
+      state.deletedRows = [];
+      if (!auto) state.editingRowId = '';
+      forwardSyncPayload = usingWorkbook ? queueForwardSync(records, deletedRows, { auto }) : null;
+      const changedParts = [];
+      if (records.length) changedParts.push(`${App.formatNumber(records.length)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea`);
+      if (deletedRows.length) changedParts.push(`${App.formatNumber(deletedRows.length)} \u05de\u05d7\u05d9\u05e7\u05d5\u05ea`);
+      const changedLabel = changedParts.join(' \u05d5-') || '\u05e9\u05d9\u05e0\u05d5\u05d9\u05d9\u05dd';
+      const saveMessage = !usingWorkbook
+        ? (auto
+            ? '\u05d4\u05e9\u05d9\u05e0\u05d5\u05d9\u05d9\u05dd \u05e0\u05e9\u05de\u05e8\u05d5 \u05d1\u05e8\u05e9\u05d9\u05de\u05ea SharePoint.'
+            : `\u05e0\u05e9\u05de\u05e8\u05d5 ${changedLabel} \u05d1\u05e8\u05e9\u05d9\u05de\u05ea SharePoint.`)
+        : (state.copyInfo && state.copyInfo.isDateCopy
+          ? (auto
+              ? '\u05d4\u05e9\u05d9\u05e0\u05d5\u05d9\u05d9\u05dd \u05e0\u05e9\u05de\u05e8\u05d5 \u05dc\u05e7\u05d5\u05d1\u05e5 \u05d4\u05d9\u05d5\u05de\u05d9.'
+              : `\u05e0\u05e9\u05de\u05e8\u05d5 ${changedLabel} \u05dc\u05e7\u05d5\u05d1\u05e5 \u05d4\u05d9\u05d5\u05de\u05d9.`)
+          : (auto
+              ? '\u05d4\u05e9\u05d9\u05e0\u05d5\u05d9\u05d9\u05dd \u05e0\u05e9\u05de\u05e8\u05d5 \u05dc\u05de\u05e7\u05d5\u05e8 \u05d4\u05e4\u05e2\u05d9\u05dc.'
+              : `\u05e0\u05e9\u05de\u05e8\u05d5 ${changedLabel} \u05dc\u05de\u05e7\u05d5\u05e8 \u05d4\u05e4\u05e2\u05d9\u05dc.`));
+      const statusMessage = listWarning
+        ? `${saveMessage} \u05e1\u05e0\u05db\u05e8\u05d5\u05df \u05d4\u05e8\u05e9\u05d9\u05de\u05d4 \u05d1-SharePoint \u05dc\u05d0 \u05d4\u05d5\u05e9\u05dc\u05dd. ${listWarning}`
+        : saveMessage;
+      const syncNote = forwardSyncPayload
+        ? ` \u05e1\u05e0\u05db\u05e8\u05d5\u05df \u05e7\u05d3\u05d9\u05de\u05d4 \u05d4\u05d5\u05db\u05df \u05e2\u05d1\u05d5\u05e8 ${App.formatNumber(forwardSyncPayload.futureDates.length)} \u05d9\u05de\u05d9\u05dd \u05e4\u05ea\u05d5\u05d7\u05d9\u05dd.`
+        : '';
+      setStatus(`${statusMessage}${syncNote}`, listWarning ? 'warn' : 'ok');
+      renderAll();
+    } catch (error) {
+      setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05e9\u05de\u05d9\u05e8\u05ea \u05d4\u05e0\u05ea\u05d5\u05e0\u05d9\u05dd.', 'err');
+    } finally {
+      setBusy(false);
+      if (state.autoSavePending && hasPendingChanges()) {
+        state.autoSavePending = false;
+        scheduleAutoSave();
+      }
+    }
+  }
+
+  function updateActionAvailability() {
+    const addRowButton = byId('addRowBtn');
+    const deleteRowsButton = byId('deleteRowsBtn');
+    const bulkButton = byId('bulkEditBtn');
+    const clearFiltersButton = byId('clearFiltersBtn');
+    const resetColumnsButton = byId('resetColumnsBtn');
+    const saveButton = byId('saveBtn');
+    const exportButton = byId('exportExcelBtn');
+    const importButton = byId('importExcelBtn');
+    const canAdd = !state.busy && canAddRowInCurrentScope();
+    const selectedCount = bulkEditableRows().length;
+    const filterCount = activeFilterCount();
+    const pendingCount = pendingChangeCount();
+    const columnOrderChanged = hasCustomColumnOrder();
+    const canImport = !state.busy && state.settings.openDates.includes(state.selectedDate);
+    const selectedLabel = App.formatNumber(selectedCount);
+    const filterLabel = App.formatNumber(filterCount);
+    const pendingLabel = App.formatNumber(pendingCount);
+    setActionLabel('saveBtn', pendingCount ? `שמור (${pendingLabel})` : 'שמור');
+    setActionLabel('addRowBtn', 'הוסף שורה');
+    setActionLabel('bulkEditBtn', selectedCount ? `עריכה מרובה (${selectedLabel})` : 'עריכה מרובה');
+    setActionLabel('deleteRowsBtn', selectedCount ? `מחק נבחרות (${selectedLabel})` : 'מחק נבחרות');
+    setActionLabel('clearFiltersBtn', filterCount ? `נקה סינונים (${filterLabel})` : 'נקה סינונים');
+    setActionLabel('resetColumnsBtn', 'אפס סדר עמודות');
+    setActionLabel('phonebookBtn', 'ספר טלפונים');
+    if (addRowButton) {
+      addRowButton.disabled = !canAdd;
+      addRowButton.title = canAdd
+        ? '\u05d4\u05d5\u05e1\u05e4\u05ea \u05e9\u05d5\u05e8\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d9\u05e9\u05d9\u05e8\u05d5\u05ea \u05d1\u05d8\u05d1\u05dc\u05d4'
+        : '\u05db\u05d3\u05d9 \u05dc\u05d4\u05d5\u05e1\u05d9\u05e3 \u05e9\u05d5\u05e8\u05d4 \u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05e7\u05d1\u05d5\u05e6\u05d4 \u05d0\u05d7\u05ea \u05d0\u05d5 \u05dc\u05d4\u05d9\u05db\u05e0\u05e1 \u05db\u05de\u05e0\u05d4\u05dc.';
+    }
+    if (deleteRowsButton) {
+      deleteRowsButton.hidden = !selectedCount;
+      deleteRowsButton.disabled = state.busy || !selectedCount;
+      deleteRowsButton.title = selectedCount
+        ? `\u05de\u05d7\u05d9\u05e7\u05ea ${App.formatNumber(selectedCount)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05e0\u05d1\u05d7\u05e8\u05d5\u05ea`
+        : '\u05e1\u05de\u05df \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05d1\u05d8\u05d1\u05dc\u05d4 \u05db\u05d3\u05d9 \u05dc\u05de\u05d7\u05d5\u05e7 \u05d0\u05d5\u05ea\u05df \u05d1\u05d1\u05ea \u05d0\u05d7\u05ea';
+    }
+    if (bulkButton) {
+      bulkButton.disabled = state.busy || !selectedCount;
+      bulkButton.title = selectedCount
+        ? `\u05e2\u05e8\u05d9\u05db\u05d4 \u05de\u05e8\u05d5\u05d1\u05d4 \u05e2\u05d1\u05d5\u05e8 ${App.formatNumber(selectedCount)} \u05e8\u05e9\u05d5\u05de\u05d5\u05ea`
+        : '\u05d1\u05d7\u05e8 \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05d1\u05d8\u05d1\u05dc\u05d4 \u05db\u05d3\u05d9 \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05e2\u05e8\u05d9\u05db\u05d4 \u05de\u05e8\u05d5\u05d1\u05d4';
+    }
+    if (clearFiltersButton) {
+      clearFiltersButton.disabled = state.busy || !filterCount;
+      clearFiltersButton.title = filterCount
+        ? `נקה ${filterLabel} סינונים פעילים`
+        : 'אין סינונים פעילים';
+    }
+    if (resetColumnsButton) {
+      resetColumnsButton.disabled = state.busy || !columnOrderChanged;
+      resetColumnsButton.title = columnOrderChanged
+        ? 'חזרה לסדר העמודות ברירת המחדל'
+        : 'סדר העמודות כבר ברירת המחדל';
+    }
+    if (saveButton) {
+      saveButton.title = pendingCount
+        ? `שמירת ${pendingLabel} שינויים`
+        : 'אין שינויים ממתינים לשמירה';
+    }
+    if (exportButton) {
+      exportButton.disabled = state.busy || !state.headers.length;
+      exportButton.title = 'ייצוא כל רשומות התאריך הנוכחי לקובץ Excel בסדר העמודות של המערכת';
+    }
+    if (importButton) {
+      importButton.disabled = !canImport;
+      importButton.title = canImport
+        ? 'ייבוא קובץ Excel לפי סדר העמודות של המערכת'
+        : 'ייבוא זמין רק בתאריך פתוח וללא פעולה פעילה אחרת';
+    }
+    syncMoreActionsMenu();
+  }
+
+  function renderAll() {
+    renderInfoBar();
+    renderForwardSyncToggle();
+    renderPhonebookTrigger();
+    renderRecords();
+    updateActionAvailability();
+    if (byId('phoneDialog').open) renderPhonebookDialog();
+  }
+
+  function mountAttendanceCommandBar() {
+    const app = document.querySelector('body[data-page="attendance"] .app');
+    const overviewCard = document.querySelector('.attendance-overview-card');
+    const tools = document.querySelector('body[data-page="attendance"] .attendance-navbar-tools');
+    const actions = byId('attendanceNavbarActions');
+    if (!(app instanceof HTMLElement) || !(overviewCard instanceof HTMLElement) || !(tools instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
+    if (byId('attendanceCommandCard')) return;
+
+    const card = document.createElement('section');
+    card.id = 'attendanceCommandCard';
+    card.className = 'card attendance-command-card';
+
+    const copy = document.createElement('div');
+    copy.className = 'attendance-command-copy';
+    copy.innerHTML = '<div class="attendance-command-head"><div class="attendance-command-title"><span class="attendance-command-kicker">פעולות</span><h2>סרגל עבודה</h2></div></div><div class="attendance-command-sync"><label class="attendance-sync-toggle"><input id="forwardSyncToggle" type="checkbox" checked><span>עדכון גורף עתידי</span></label><div id="forwardSyncMeta" class="attendance-sync-meta"></div></div>';
+
+    const row = document.createElement('div');
+    row.className = 'attendance-command-row';
+    row.appendChild(tools);
+
+    card.appendChild(copy);
+    card.appendChild(row);
+    overviewCard.insertAdjacentElement('afterend', card);
+    organizeAttendanceActionGroups();
+
+  }
+
+  function bindEvents() {
+    byId('backBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      window.location.href = 'index.html';
+    });
+    byId('clearFiltersBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      clearAllFilters();
+    });
+    byId('tableSearch').addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      state.searchText = String(target.value || '');
+      clearViewCaches();
+      if (state.searchInputTimer) window.clearTimeout(state.searchInputTimer);
+      state.searchInputTimer = window.setTimeout(() => {
+        state.searchInputTimer = 0;
+        renderRecords();
+      }, 140);
+    });
+    byId('phonebookSearch').addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      state.phonebookSearchText = String(target.value || '');
+      clearViewCaches();
+      if (state.phonebookSearchTimer) window.clearTimeout(state.phonebookSearchTimer);
+      state.phonebookSearchTimer = window.setTimeout(() => {
+        state.phonebookSearchTimer = 0;
+        renderPhonebookDialog();
+      }, 140);
+    });
+    const forwardSyncToggle = byId('forwardSyncToggle');
+    if (forwardSyncToggle instanceof HTMLInputElement) {
+      forwardSyncToggle.addEventListener('change', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        state.forwardSyncEnabled = target.checked;
+        persistAttendanceSelection();
+        renderForwardSyncToggle();
+      });
+    }
+    byId('recordsBoard').addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const rowAction = target.closest('button[data-row-action][data-row-id]');
+      if (rowAction instanceof HTMLButtonElement) {
+        const rowId = String(rowAction.dataset.rowId || '');
+        const action = String(rowAction.dataset.rowAction || '');
+        if (action === 'edit') {
+          const row = state.rows.find((item) => item.id === rowId);
+          if (!row) return;
+          const nextRowId = state.editingRowId === rowId && !row.isNew ? '' : rowId;
+          setEditingRow(nextRowId, !!nextRowId);
+        } else if (action === 'duplicate') {
+          const row = state.rows.find((item) => item.id === rowId);
+          if (row) cloneRowFromSource(row);
+        } else if (action === 'remove') {
+          removeRow(rowId);
+        }
+        return;
+      }
+      const menuButton = target.closest('button[data-filter-menu-button]');
+      if (menuButton instanceof HTMLButtonElement) {
+        openColumnMenu(String(menuButton.dataset.filterMenuButton || ''));
+        return;
+      }
+      const sortMenuButton = target.closest('button[data-menu-sort-letter]');
+      if (sortMenuButton instanceof HTMLButtonElement) {
+        toggleSort(String(sortMenuButton.dataset.menuSortLetter || ''), String(sortMenuButton.dataset.menuSortDirection || 'asc'));
+        return;
+      }
+      const clearFilterButton = target.closest('button[data-clear-filter-letter]');
+      if (clearFilterButton instanceof HTMLButtonElement) {
+        clearColumnFilter(String(clearFilterButton.dataset.clearFilterLetter || ''));
+        return;
+      }
+      const clearAllButton = target.closest('button[data-clear-all-filters]');
+      if (clearAllButton instanceof HTMLButtonElement) {
+        clearAllFilters();
+        return;
+      }
+      const moveColumnButton = target.closest('button[data-move-column][data-move-direction]');
+      if (moveColumnButton instanceof HTMLButtonElement) {
+        moveColumn(String(moveColumnButton.dataset.moveColumn || ''), Number(moveColumnButton.dataset.moveDirection || 0));
+        return;
+      }
+      const resetColumnsButton = target.closest('button[data-reset-columns]');
+      if (resetColumnsButton instanceof HTMLButtonElement) {
+        resetColumnOrder();
+        return;
+      }
+      const valueButton = target.closest('button[data-filter-letter][data-filter-value]');
+      if (valueButton instanceof HTMLButtonElement) {
+        applyColumnFilter(String(valueButton.dataset.filterLetter || ''), String(valueButton.dataset.filterValue || ''));
+        return;
+      }
+      const sortButton = target.closest('button[data-sort-letter]');
+      if (sortButton instanceof HTMLButtonElement) {
+        toggleSort(String(sortButton.dataset.sortLetter || ''));
+      }
+    });
+    byId('recordsBoard').addEventListener('change', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.matches('input[data-row-select]')) {
+        toggleRowSelection(String(target.dataset.rowSelect || ''), target.checked);
+        return;
+      }
+      if (target instanceof HTMLInputElement && target.matches('input[data-select-visible]')) {
+        toggleVisibleSelection(target.checked);
+        return;
+      }
+      if (target instanceof HTMLSelectElement) {
+        syncCellToneState(target, target.value);
+        updateCell(String(target.dataset.rowId || ''), String(target.dataset.letter || ''), target.value);
+        scheduleAutoSave();
+      }
+    });
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (state.openColumnMenuLetter && !target.closest('.th-shell')) closeColumnMenu();
+      if (state.moreActionsOpen && !target.closest('.attendance-more-shell')) closeMoreActionsMenu();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (!(event instanceof KeyboardEvent)) return;
+      if (event.key === 'Escape') closeMoreActionsMenu();
+    });
+    window.addEventListener('resize', () => {
+      applyFrozenColumnsLayout();
+    });
+    byId('recordsBoard').addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      syncCellToneState(target, target.value);
+      updateCell(String(target.dataset.rowId || ''), String(target.dataset.letter || ''), target.value);
+    });
+    byId('recordsBoard').addEventListener('focusout', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (!target.classList.contains('cell-input')) return;
+      scheduleAutoSave();
+    });
+    byId('addRowBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      quickAddRow();
+    });
+    byId('deleteRowsBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      deleteSelectedRows();
+    });
+    byId('bulkEditBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      openBulkEditDialog();
+    });
+    byId('resetColumnsBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      resetColumnOrder();
+    });
+    byId('moreActionsBtn').addEventListener('click', () => {
+      toggleMoreActionsMenu();
+    });
+    byId('addRowCancel').addEventListener('click', closeAddRowDialog);
+    byId('addRowSave').addEventListener('click', addRowFromDialog);
+    byId('bulkEditCancel').addEventListener('click', closeBulkEditDialog);
+    byId('bulkEditApply').addEventListener('click', applyBulkEdit);
+    byId('bulkEditColumn').addEventListener('change', renderBulkEditValueField);
+    byId('phonebookBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      openPhonebookDialog();
+    });
+    byId('exportExcelBtn').addEventListener('click', exportAttendanceRowsToExcel);
+    byId('importExcelBtn').addEventListener('click', () => {
+      const input = byId('importExcelInput');
+      if (!(input instanceof HTMLInputElement)) return;
+      input.value = '';
+      input.click();
+    });
+    byId('importExcelInput').addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      const file = target.files && target.files[0] ? target.files[0] : null;
+      target.value = '';
+      if (!file) return;
+      importAttendanceRowsFromFile(file);
+    });
+    byId('phonebookClose').addEventListener('click', closePhonebookDialog);
+    byId('saveBtn').addEventListener('click', () => {
+      closeMoreActionsMenu();
+      saveChanges({ auto: false });
+    });
+    window.addEventListener('beforeunload', (event) => {
+      if (hasPendingChanges()) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    });
+  }
+
+  function init() {
+    if (!state.selection.dateKey || (!hasStoredGroupSelection() && !isAdminMode())) {
+      window.location.href = 'index.html';
+      return;
+    }
+    App.initShellSidebar();
+    mountAttendanceCommandBar();
+    renderSidebarState();
+    bindEvents();
+    state.selectedDate = state.selection.dateKey;
+    loadAllData();
+  }
+
+  init();
+})();
+
+
+/* ============================================================
+   Section: Page Controller - admin.html
+   ============================================================ */
+
+(() => {
+  'use strict';
+
+  if (!document.body || document.body.dataset.page !== 'admin') return;
+
+  const App = window.AttendanceApp;
+  const initialAdminSelection = App.loadSelection();
+  function createAdminModuleState(defaultView) {
+    return {
+      items: [],
+      busy: false,
+      loaded: false,
+      error: '',
+      schemaWarning: '',
+      listTitle: '',
+      loadingPromise: null,
+      view: defaultView || 'table'
+    };
+  }
+
+  const state = {
+    settings: App.createDefaultSettings(),
+    headers: [],
+    catalog: [],
+    phonebookHeaders: [],
+    phonebookCatalog: [],
+    groupSelectionRows: [],
+    sourceRowsOrigin: 'source',
+    unitsSearchText: '',
+    currentUser: { name: '', email: '', login: '' },
+    unlocked: !!initialAdminSelection.adminMode,
+    activeTab: 'operations',
+    lastSavedSnapshot: '',
+    lastSavedAtText: '',
+    saving: false,
+    diagnostics: {
+      attendance: null,
+      phonebook: null
+    },
+    diagnosticsBusy: false,
+    diagnosticsTimer: 0,
+    diagnosticsRunId: 0,
+    lastDiagnosticsAt: null,
+    modules: {
+      operations: createAdminModuleState('table'),
+      casualties: createAdminModuleState('table')
+    },
+    recordDialog: {
+      moduleKey: '',
+      mode: 'create',
+      itemId: 0,
+      lookupMatch: null
+    },
+    liveTimerId: 0
+  };
+  const ADMIN_TAB_META = Object.freeze({
+    overview: { label: 'סקירה', icon: '◫' },
+    operations: { label: 'יומן מבצעים', icon: '◨' },
+    casualties: { label: 'נפגעים ורכוש', icon: '◩' },
+    days: { label: 'ימי עבודה', icon: '◷' },
+    units: { label: 'נכס לאומי', icon: '☰' },
+    graphs: { label: 'הגדרות דשבורד', icon: '⌁' },
+    preferences: { label: 'העדפות', icon: '⚙' },
+    config: { label: 'הגדרות מערכת', icon: '⌘' }
+  });
+  const ADMIN_TAB_DETAILS = Object.freeze({
+    overview: '',
+    operations: '',
+    casualties: '',
+    config: '',
+    days: '',
+    preferences: '',
+    units: '',
+    graphs: ''
+  });
+  const ADMIN_TAB_ICON_CLASSES = Object.freeze({
+    overview: 'fas fa-chart-column',
+    operations: 'fas fa-clipboard-list',
+    casualties: 'fas fa-house-damage',
+    config: 'fas fa-database',
+    days: 'fas fa-calendar-days',
+    preferences: 'fas fa-sliders',
+    units: 'fas fa-users-gear',
+    graphs: 'fas fa-chart-pie'
+  });
+  const ADMIN_DASHBOARD_MAX_ITEMS_LIMIT = 100;
+  const DASHBOARD_GROUP_CATEGORY_FIELD = App.DASHBOARD_SPECIAL_FIELDS && App.DASHBOARD_SPECIAL_FIELDS.GROUP_CATEGORY
+    ? App.DASHBOARD_SPECIAL_FIELDS.GROUP_CATEGORY
+    : '__group_category__';
+  const OPERATIONS_STATUS_OPTIONS = Object.freeze(['פתוח', 'בטיפול', 'מוקפא', 'סגור']);
+  const YES_NO_OPTIONS = Object.freeze(['כן', 'לא']);
+  const OPERATIONS_LOG_FIELDS = Object.freeze([
+    { key: 'operatorName', internalName: 'OperatorName', label: 'גורם מפעיל', input: 'text', spType: 'Text' },
+    { key: 'eventDetails', internalName: 'EventDetails', label: 'פירוט האירוע', input: 'textarea', spType: 'Note', rows: 4, required: true, span: 'span-all' },
+    { key: 'handlingStatus', internalName: 'HandlingStatus', label: 'סטטוס טיפול', input: 'select', options: OPERATIONS_STATUS_OPTIONS, spType: 'Choice', allowBlank: false },
+    { key: 'additionalNotes', internalName: 'AdditionalNotes', label: 'הערות נוספות', input: 'textarea', spType: 'Note', rows: 3, span: 'span-all' }
+  ]);
+  const CASUALTY_FIELDS = Object.freeze([
+    { key: 'recordType', internalName: 'RecordType', label: 'סוג', input: 'select', options: ['נפגע רכוש', 'נפגעים'], spType: 'Choice', allowBlank: false },
+    { key: 'impactDate', internalName: 'ImpactDate', label: 'תאריך פגיעה', input: 'date', spType: 'DateTime' },
+    { key: 'personalNumber', internalName: 'PersonalNumber', label: 'מספר אישי', input: 'text', spType: 'Text' },
+    { key: 'rank', internalName: 'RankText', label: 'דרגה', input: 'text', spType: 'Text' },
+    { key: 'firstName', internalName: 'FirstName', label: 'שם פרטי', input: 'text', spType: 'Text' },
+    { key: 'lastName', internalName: 'LastName', label: 'שם משפחה', input: 'text', spType: 'Text' },
+    { key: 'serviceType', internalName: 'ServiceType', label: 'סוג שירות', input: 'text', spType: 'Text' },
+    { key: 'familyStatus', internalName: 'FamilyStatus', label: 'סטטוס משפחה', input: 'text', spType: 'Text' },
+    { key: 'indications', internalName: 'Indications', label: 'אינדיקציות', input: 'textarea', spType: 'Note', rows: 3, span: 'span-all' },
+    { key: 'unit', internalName: 'UnitName', label: 'יחידה', input: 'text', spType: 'Text' },
+    { key: 'squadron', internalName: 'Squadron', label: 'טייסת', input: 'text', spType: 'Text' },
+    { key: 'address', internalName: 'AddressText', label: 'כתובת', input: 'text', spType: 'Text', span: 'span-all' },
+    { key: 'phone', internalName: 'PhoneNumber', label: 'טלפון', input: 'text', spType: 'Text' },
+    { key: 'impactType', internalName: 'ImpactType', label: 'סוג הפגיעה', input: 'text', spType: 'Text' },
+    { key: 'severity', internalName: 'SeverityLevel', label: 'סיווג החומרה', input: 'text', spType: 'Text' },
+    { key: 'housingOwned', internalName: 'HousingOwned', label: 'בית בבעלות המשרה?', input: 'select', options: YES_NO_OPTIONS, spType: 'Choice' },
+    { key: 'livesAtHome', internalName: 'LivesAtHome', label: 'מתגורר בבית?', input: 'select', options: YES_NO_OPTIONS, spType: 'Choice' },
+    { key: 'isEvacuated', internalName: 'IsEvacuated', label: 'האם פונה?', input: 'select', options: YES_NO_OPTIONS, spType: 'Choice' },
+    { key: 'evacuationAddress', internalName: 'EvacuationAddress', label: 'כתובת פינוי', input: 'text', spType: 'Text', span: 'span-all' },
+    { key: 'notes', internalName: 'AdditionalNotes', label: 'הערות', input: 'textarea', spType: 'Note', rows: 3, span: 'span-all' },
+    { key: 'responseStatus', internalName: 'ResponseStatus', label: 'סטטוס מענה', input: 'text', spType: 'Text' }
+  ]);
+  const PERSON_LOOKUP_ALIASES = Object.freeze({
+    personalNumber: ['מספר אישי', 'מס אישי', 'אישי', 'personal number'],
+    rank: ['דרגה', 'rank'],
+    firstName: ['שם פרטי', 'first name'],
+    lastName: ['שם משפחה', 'last name'],
+    fullName: ['שם מלא', 'full name', 'full_name'],
+    serviceType: ['סוג שירות', 'service type'],
+    familyStatus: ['סטטוס משפחה', 'מצב משפחתי', 'family status'],
+    indications: ['אינדיקציות', 'indications'],
+    unit: ['יחידה', 'unit'],
+    squadron: ['טייסת', 'squadron'],
+    address: ['כתובת', 'address'],
+    phone: ['טלפון', 'מספר טלפון', 'נייד', 'phone', 'mobile']
+  });
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function readTextFieldValue(id) {
+    const field = byId(id);
+    return field && 'value' in field ? String(field.value || '').trim() : '';
+  }
+
+  function setStatus(message, kind) {
+    const el = byId('status');
+    el.className = `status${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  function getChangePasswordDialog() {
+    const dialog = byId('changePasswordDialog');
+    return dialog instanceof HTMLDialogElement ? dialog : null;
+  }
+
+  function setPasswordDialogStatus(message, kind) {
+    const el = byId('changePasswordDialogStatus');
+    if (!el) return;
+    el.className = `status${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  function resetChangePasswordDialog() {
+    const hasExistingPassword = !!state.settings.adminPasswordHash;
+    const currentField = byId('currentPasswordField');
+    const currentInput = byId('currentPasswordInput');
+    const nextInput = byId('nextPasswordInput');
+    const confirmInput = byId('confirmPasswordInput');
+    const closeButton = byId('closeChangePasswordDialogBtn');
+    const submitButton = byId('submitChangePasswordBtn');
+    if (currentField) currentField.classList.toggle('hidden', !hasExistingPassword);
+    if (currentInput instanceof HTMLInputElement) currentInput.value = '';
+    if (nextInput instanceof HTMLInputElement) nextInput.value = '';
+    if (confirmInput instanceof HTMLInputElement) confirmInput.value = '';
+    if (closeButton instanceof HTMLButtonElement) closeButton.disabled = false;
+    if (submitButton instanceof HTMLButtonElement) submitButton.disabled = false;
+    setPasswordDialogStatus(
+      hasExistingPassword
+        ? 'הזינו קוד נוכחי וקוד חדש.'
+        : 'הגדירו קוד מנהל חדש.',
+      ''
+    );
+  }
+
+  function closeChangePasswordDialog() {
+    const dialog = getChangePasswordDialog();
+    if (!dialog) return;
+    if (dialog.open) dialog.close();
+    resetChangePasswordDialog();
+  }
+
+  function openChangePasswordDialog() {
+    if (!state.unlocked) {
+      setStatus('פתחו קודם את מצב הניהול כדי לשנות את קוד המנהל.', 'warn');
+      return;
+    }
+    const dialog = getChangePasswordDialog();
+    if (!dialog) return;
+    resetChangePasswordDialog();
+    if (!dialog.open) dialog.showModal();
+    const target = state.settings.adminPasswordHash ? byId('currentPasswordInput') : byId('nextPasswordInput');
+    if (target instanceof HTMLInputElement) target.focus();
+  }
+
+  function syncAdminSession(flag) {
+    const selection = App.loadSelection();
+    selection.adminMode = !!flag;
+    App.saveSelection(selection);
+  }
+
+  function selectedValues(select) {
+    if (!(select instanceof HTMLSelectElement)) return [];
+    return Array.from(select.selectedOptions).map((option) => String(option.value || '').trim()).filter(Boolean);
+  }
+
+  function formatAdminClock(value) {
+    const date = value instanceof Date ? value : new Date();
+    return new Intl.DateTimeFormat('he-IL', {
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  }
+
+  function buildSettingsSnapshot(settings) {
+    const normalized = App.normalizeSettings(settings || state.settings);
+    const snapshotGroupColumns = App.normalizeColumnList(
+      settings && Array.isArray(settings.groupColumns) ? settings.groupColumns : normalized.groupColumns,
+      normalized.groupColumns || ['A']
+    );
+    const draftGroupCategories = resolveAdminGroupCategoriesDraft(
+      settings && Array.isArray(settings.groupCategories) ? settings.groupCategories : normalized.groupCategories,
+      snapshotGroupColumns
+    );
+    return JSON.stringify({
+      adminPasswordHash: String(normalized.adminPasswordHash || ''),
+      openDates: Array.isArray(normalized.openDates) ? normalized.openDates.slice() : [],
+      sourceHeaders: Array.isArray(normalized.sourceHeaders) ? normalized.sourceHeaders.slice() : [],
+      workbookUrlOverride: String(normalized.workbookUrlOverride || ''),
+      workbookCopyFolderUrlOverride: String(normalized.workbookCopyFolderUrlOverride || ''),
+      chatListTitleOverride: String(normalized.chatListTitleOverride || ''),
+      operationsLogListTitleOverride: String(normalized.operationsLogListTitleOverride || ''),
+      casualtyListTitleOverride: String(normalized.casualtyListTitleOverride || ''),
+      customChatRooms: App.resolveCustomChatRooms(normalized).map((item) => ({
+        id: String(item.id || ''),
+        label: String(item.label || ''),
+        description: String(item.description || '')
+      })),
+      groupColumns: Array.isArray(normalized.groupColumns) ? normalized.groupColumns.slice() : [],
+      filterColumns: Array.isArray(normalized.filterColumns) ? normalized.filterColumns.slice() : [],
+      editableColumns: Array.isArray(normalized.editableColumns) ? normalized.editableColumns.slice() : [],
+      addRowColumns: Array.isArray(normalized.addRowColumns) ? normalized.addRowColumns.slice() : [],
+      phonebookColumns: Array.isArray(normalized.phonebookColumns) ? normalized.phonebookColumns.slice() : [],
+      frozenColumns: Array.isArray(normalized.frozenColumns) ? normalized.frozenColumns.slice() : [],
+      dropdownConfigs: App.resolveDropdownConfigs(normalized).map((item) => ({
+        column: item.column,
+        options: Array.isArray(item.options) ? item.options.slice() : []
+      })),
+      groupCategories: draftGroupCategories.map((item) => ({
+        id: String(item.id || ''),
+        label: String(item.label || ''),
+        selections: Array.isArray(item.selections) ? item.selections.map((selection) => ({ ...selection })) : []
+      })),
+      crossTabs: (Array.isArray(normalized.crossTabs) ? normalized.crossTabs : []).map((item) => ({
+        label: String(item.label || ''),
+        rowColumns: Array.isArray(item.rowColumns) ? item.rowColumns.slice() : [],
+        colColumns: Array.isArray(item.colColumns) ? item.colColumns.slice() : [],
+        chartType: String(item.chartType || 'stacked'),
+        dataScope: String(item.dataScope || 'scoped'),
+        aggregation: String(item.aggregation || 'count'),
+        valueColumn: String(item.valueColumn || ''),
+        palette: String(item.palette || 'aurora'),
+        customColors: Array.isArray(item.customColors) ? item.customColors.slice() : [],
+        layoutSpan: Number(item.layoutSpan || 1),
+        layoutSpanTablet: Number(item.layoutSpanTablet || 1),
+        layoutSpanMobile: Number(item.layoutSpanMobile || 1),
+        maxItems: Number(item.maxItems || 8),
+        showToUsers: item.showToUsers !== false,
+        showTotals: item.showTotals !== false,
+        showLegend: item.showLegend !== false,
+        showValues: item.showValues !== false,
+        showLabels: item.showLabels !== false,
+        showGrid: item.showGrid !== false,
+        animate: item.animate !== false,
+        legendPosition: String(item.legendPosition || 'top'),
+        borderWidth: Number(item.borderWidth || 2),
+        borderRadius: Number(item.borderRadius || 10),
+        padding: Number(item.padding || 12),
+        minHeight: Number(item.minHeight || 300),
+        animationMs: Number(item.animationMs || 700),
+        scaleStep: Number(item.scaleStep || 0)
+      }))
+    });
+  }
+
+  function collectDraftSettings() {
+    if (!state.unlocked || !byId('groupColumns')) {
+      return {
+        ...App.normalizeSettings(state.settings),
+        groupCategories: resolveAdminGroupCategoriesDraft(state.settings.groupCategories, state.settings.groupColumns)
+      };
+    }
+    const draftGroupCategories = readGroupCategoriesFromDom(true);
+    return {
+      ...App.normalizeSettings({
+        ...state.settings,
+        workbookUrlOverride: '',
+        workbookCopyFolderUrlOverride: '',
+        chatListTitleOverride: '',
+        operationsLogListTitleOverride: '',
+        casualtyListTitleOverride: '',
+        customChatRooms: readChatRoomsFromDom(true),
+        groupColumns: selectedValues(byId('groupColumns')),
+        filterColumns: selectedValues(byId('filterColumns')),
+        editableColumns: selectedValues(byId('editableColumns')),
+        addRowColumns: selectedValues(byId('addRowColumns')),
+        phonebookColumns: selectedValues(byId('phonebookColumns')),
+        frozenColumns: selectedValues(byId('frozenColumns')),
+        dropdownConfigs: readDropdownConfigsFromDom(true),
+        groupCategories: draftGroupCategories,
+        crossTabs: readCrossTabsFromDom(),
+        openDates: Array.isArray(state.settings.openDates) ? state.settings.openDates.slice() : []
+      }),
+      groupCategories: draftGroupCategories
+    };
+  }
+
+  function hasUnsavedAdminChanges() {
+    if (!state.unlocked) return false;
+    return buildSettingsSnapshot(collectDraftSettings()) !== state.lastSavedSnapshot;
+  }
+
+  function renderAdminTabHint() {
+    const hint = byId('adminTabHint');
+    if (!hint) return;
+    hint.textContent = '';
+  }
+
+  function buildAdminOverviewCards(draft) {
+    const dropdownCount = App.resolveDropdownConfigs(draft).length;
+    const categoryCount = resolveAdminGroupCategoriesDraft(draft.groupCategories, draft.groupColumns).length;
+    const widgetCount = Array.isArray(draft.crossTabs) ? draft.crossTabs.length : 0;
+    const operationsCount = state.modules && state.modules.operations && Array.isArray(state.modules.operations.items) ? state.modules.operations.items.length : 0;
+    const casualtiesCount = state.modules && state.modules.casualties && Array.isArray(state.modules.casualties.items) ? state.modules.casualties.items.length : 0;
+    const editableColumnsCount = Array.isArray(draft.editableColumns) ? draft.editableColumns.length : 0;
+    const dirty = hasUnsavedAdminChanges();
+    return [
+      {
+        key: 'openDates',
+        strong: App.formatNumber((draft.openDates || []).length),
+        title: 'ימי עבודה פתוחים',
+        detail: 'תאריכים שזמינים כעת במסך הבחירה',
+        icon: 'fa-calendar-day',
+        badge: 'זמינות',
+        className: 'is-featured is-primary'
+      },
+      {
+        key: 'editableColumns',
+        strong: App.formatNumber(editableColumnsCount),
+        title: 'עמודות עריכה',
+        detail: 'שדות שניתן לעדכן מתוך מסך הנוכחות',
+        icon: 'fa-pen-ruler',
+        badge: 'עריכה'
+      },
+      {
+        key: 'dropdowns',
+        strong: App.formatNumber(dropdownCount),
+        title: 'Dropdowns',
+        detail: 'שדות עם אפשרויות קבועות לבחירה',
+        icon: 'fa-list-check',
+        badge: 'טפסים'
+      },
+      {
+        key: 'categories',
+        strong: App.formatNumber(categoryCount),
+        title: 'קטגוריות',
+        detail: 'קטגוריות בחירה שמופיעות במסך הפתיחה',
+        icon: 'fa-layer-group',
+        badge: 'בחירה'
+      },
+      {
+        key: 'widgets',
+        strong: App.formatNumber(widgetCount),
+        title: 'ווידג׳טים',
+        detail: 'גרפים ותצוגות שמוגדרים לדשבורד',
+        icon: 'fa-chart-column',
+        badge: 'אנליטיקה'
+      },
+      {
+        key: 'operations',
+        strong: App.formatNumber(operationsCount),
+        title: 'אירועי מבצעים',
+        detail: 'רשומות פעילות ביומן המבצעים',
+        icon: 'fa-clipboard-list',
+        badge: 'מבצעים'
+      },
+      {
+        key: 'casualties',
+        strong: App.formatNumber(casualtiesCount),
+        title: 'נפגעים ורכוש',
+        detail: 'רשומות בטיפול ברשימת הנפגעים והרכוש',
+        icon: 'fa-house-damage',
+        badge: 'מענה'
+      },
+      {
+        key: 'settingsState',
+        strong: dirty ? 'לא שמור' : 'שמור',
+        title: 'מצב הגדרות',
+        detail: dirty ? 'יש שינויים שממתינים לשמירה' : 'כל ההגדרות מסונכרנות כרגע',
+        icon: dirty ? 'fa-triangle-exclamation' : 'fa-circle-check',
+        badge: dirty ? 'לטיפול' : 'תקין',
+        className: `is-status ${dirty ? 'is-dirty' : 'is-ok'}`
+      },
+      {
+        key: 'workbookSource',
+        strong: 'SharePoint',
+        title: 'מקור נתונים',
+        detail: state.sourceRowsOrigin === 'attendance-fallback'
+          ? 'המאגר הראשי עדיין ריק, ולכן מוצגות כרגע רשומות יומיות קיימות.'
+          : 'המערכת פועלת ישירות מול רשימות SharePoint. קבצים משמשים לייבוא בלבד.',
+        icon: 'fa-database',
+        badge: 'מקור',
+        className: 'is-ok is-textual is-source'
+      }
+    ];
+  }
+
+  function renderAdminHeroMetrics(cards) {
+    const host = byId('adminHeroMetrics');
+    if (!host) return;
+    const safeCards = Array.isArray(cards) ? cards : [];
+    const items = ['openDates', 'operations', 'settingsState']
+      .map((key) => safeCards.find((card) => card.key === key))
+      .filter(Boolean);
+    host.innerHTML = items.map((card) => {
+      return `
+        <article class="admin-hero-metric${card.className ? ` ${card.className}` : ''}">
+          <span class="admin-hero-metric-icon" aria-hidden="true"><i class="fas ${App.escapeHtml(card.icon || 'fa-square')}"></i></span>
+          <div class="admin-hero-metric-copy">
+            <span class="admin-hero-metric-label">${App.escapeHtml(card.title)}</span>
+            <strong>${App.escapeHtml(String(card.strong || '0'))}</strong>
+            <small>${App.escapeHtml(card.detail || '')}</small>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function renderAdminOverview() {
+    const host = byId('adminOverview');
+    if (!host) return;
+    const draft = collectDraftSettings();
+    const cards = buildAdminOverviewCards(draft);
+    renderAdminHeroMetrics(cards);
+    host.innerHTML = cards.map((card) => {
+      return `
+        <article class="overview-card${card.className ? ` ${card.className}` : ''}">
+          <div class="overview-card-head">
+            <span class="overview-card-badge">${App.escapeHtml(card.badge || 'סקירה')}</span>
+            <span class="overview-card-icon" aria-hidden="true"><i class="fas ${App.escapeHtml(card.icon || 'fa-square')}"></i></span>
+          </div>
+          <div class="overview-card-copy">
+            <span class="overview-card-label">${App.escapeHtml(card.title)}</span>
+            <strong>${App.escapeHtml(String(card.strong || '0'))}</strong>
+            <small>${App.escapeHtml(card.detail || '')}</small>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function getAdminModuleConfig(moduleKey) {
+    if (moduleKey === 'operations') {
+      return {
+        key: 'operations',
+        title: 'יומן מבצעים',
+        singular: 'אירוע',
+        boardId: 'operationsLogBoard',
+        metaId: 'operationsLogMeta',
+        addButtonId: 'addOperationsEntryBtn',
+        refreshButtonId: 'refreshOperationsBtn',
+        listTitleResolver: App.resolveOperationsLogListTitle,
+        listFallbackTitle: 'AttendanceOperationsLog',
+        listDescription: 'Attendance operations log',
+        fields: OPERATIONS_LOG_FIELDS,
+        extraFields: [
+          { internalName: 'StatusSince', label: 'סטטוס מאז', spType: 'DateTime' }
+        ]
+      };
+    }
+    if (moduleKey === 'casualties') {
+      return {
+        key: 'casualties',
+        title: 'נפגעי רכוש ונפגעים',
+        singular: 'רשומה',
+        boardId: 'casualtiesBoard',
+        metaId: 'casualtiesMeta',
+        addButtonId: 'addCasualtyEntryBtn',
+        refreshButtonId: 'refreshCasualtiesBtn',
+        listTitleResolver: App.resolveCasualtyListTitle,
+        listFallbackTitle: 'AttendanceCasualties',
+        listDescription: 'Attendance casualties and property registry',
+        fields: CASUALTY_FIELDS,
+        extraFields: []
+      };
+    }
+    return null;
+  }
+
+  function getAdminModuleState(moduleKey) {
+    return state.modules && state.modules[moduleKey] ? state.modules[moduleKey] : null;
+  }
+
+  function escapeXml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function buildAdminFieldSchema(definition) {
+    return App.buildSharePointFieldSchema(definition);
+  }
+
+  async function ensureAdminModuleListReady(moduleKey, settings) {
+    const config = getAdminModuleConfig(moduleKey);
+    if (!config) throw new Error('מודול ניהול לא מוכר.');
+    const preferredListTitle = String(config.listTitleResolver(settings || state.settings) || '').trim();
+    const cacheKey = `${moduleKey}-list::${preferredListTitle || config.listFallbackTitle}`;
+    const listTitle = await App.resolveListTitle(cacheKey, preferredListTitle, config.listFallbackTitle, config.listDescription);
+    const defs = (config.fields || []).concat(config.extraFields || []);
+    for (let index = 0; index < defs.length; index += 1) {
+      const schemaXml = buildAdminFieldSchema(defs[index]);
+      if (!schemaXml) continue;
+      try {
+        await App.ensureField(listTitle, defs[index].internalName, schemaXml);
+      } catch (error) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn(`Attendance admin schema: failed to ensure ${defs[index].internalName} on ${listTitle}`, error);
+        }
+      }
+    }
+    return listTitle;
+  }
+
+  function adminModuleSelectFields(moduleKey) {
+    const config = getAdminModuleConfig(moduleKey);
+    if (!config) return 'Id,Title,Created,Modified';
+    return Array.from(new Set(
+      ['Id', 'Title', 'Created', 'Modified']
+        .concat((config.fields || []).map((field) => field.internalName).filter(Boolean))
+        .concat((config.extraFields || []).map((field) => field.internalName).filter(Boolean))
+    )).join(',');
+  }
+
+  async function resolveAdminModuleSelectSpec(moduleKey, listTitle) {
+    const requested = adminModuleSelectFields(moduleKey)
+      .split(',')
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    const alwaysAvailable = new Set(['Id', 'Title', 'Created', 'Modified']);
+    const available = new Set(alwaysAvailable);
+    try {
+      const fields = await App.getListFields(listTitle, true);
+      (Array.isArray(fields) ? fields : []).forEach((field) => {
+        const internalName = String(field && field.InternalName || '').trim();
+        const title = String(field && field.Title || '').trim();
+        if (internalName) available.add(internalName);
+        if (title) available.add(title);
+      });
+    } catch (error) {}
+    const selectFields = Array.from(new Set(
+      ['Id', 'Title', 'Created', 'Modified']
+        .concat(requested.filter((fieldName) => alwaysAvailable.has(fieldName) || available.has(fieldName)))
+    ));
+    const missingFields = requested.filter((fieldName) => !alwaysAvailable.has(fieldName) && !available.has(fieldName));
+    return {
+      selectFields: selectFields.join(','),
+      missingFields
+    };
+  }
+
+  function normalizeAdminTextValue(value) {
+    return String(value || '').replace(/\r/g, '').trim();
+  }
+
+  function normalizeAdminDateValue(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const safe = text.match(/^\d{4}-\d{2}-\d{2}/);
+    if (safe) return safe[0];
+    const date = new Date(text);
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const year = String(date.getFullYear()).padStart(4, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function normalizeAdminModuleItem(moduleKey, row) {
+    const config = getAdminModuleConfig(moduleKey);
+    const item = {
+      id: Number(row && row.Id || 0),
+      title: normalizeAdminTextValue(row && row.Title || ''),
+      createdAt: String(row && row.Created || '').trim(),
+      modifiedAt: String(row && row.Modified || '').trim()
+    };
+    (config && Array.isArray(config.fields) ? config.fields : []).forEach((field) => {
+      const raw = row && field.internalName ? row[field.internalName] : '';
+      item[field.key] = field.spType === 'DateTime'
+        ? normalizeAdminDateValue(raw)
+        : normalizeAdminTextValue(raw);
+    });
+    if (moduleKey === 'operations') {
+      item.statusSince = String(row && row.StatusSince || '').trim() || item.createdAt;
+    }
+    return item;
+  }
+
+  function emptyAdminModuleRecord(moduleKey) {
+    const config = getAdminModuleConfig(moduleKey);
+    const values = {};
+    (config && Array.isArray(config.fields) ? config.fields : []).forEach((field) => {
+      if (field.input === 'select') {
+        values[field.key] = Array.isArray(field.options) && field.options.length ? String(field.options[0]) : '';
+      } else {
+        values[field.key] = '';
+      }
+    });
+    if (moduleKey === 'operations') values.handlingStatus = 'פתוח';
+    if (moduleKey === 'casualties') values.recordType = 'נפגע רכוש';
+    return values;
+  }
+
+  function getAdminModuleItemById(moduleKey, itemId) {
+    const moduleState = getAdminModuleState(moduleKey);
+    return moduleState && Array.isArray(moduleState.items)
+      ? moduleState.items.find((item) => Number(item.id || 0) === Number(itemId || 0)) || null
+      : null;
+  }
+
+  function buildAdminModuleTitle(moduleKey, values) {
+    if (moduleKey === 'operations') {
+      return normalizeAdminTextValue(values.eventDetails || values.operatorName || 'אירוע מבצעי').slice(0, 255);
+    }
+    const fullName = [values.firstName, values.lastName].map((item) => normalizeAdminTextValue(item)).filter(Boolean).join(' ').trim();
+    const fallback = [normalizeAdminTextValue(values.recordType), normalizeAdminTextValue(values.personalNumber)].filter(Boolean).join(' • ');
+    return (fullName || fallback || 'רשומת נפגעים ורכוש').slice(0, 255);
+  }
+
+  function normalizeAdminModuleValues(moduleKey, values) {
+    const config = getAdminModuleConfig(moduleKey);
+    const next = {};
+    (config && Array.isArray(config.fields) ? config.fields : []).forEach((field) => {
+      const raw = values && Object.prototype.hasOwnProperty.call(values, field.key) ? values[field.key] : '';
+      if (field.spType === 'DateTime') {
+        next[field.key] = normalizeAdminDateValue(raw);
+        return;
+      }
+      if (field.input === 'select') {
+        const safe = normalizeAdminTextValue(raw);
+        next[field.key] = Array.isArray(field.options) && field.options.includes(safe) ? safe : '';
+        return;
+      }
+      next[field.key] = normalizeAdminTextValue(raw);
+    });
+    if (moduleKey === 'operations' && !next.handlingStatus) next.handlingStatus = 'פתוח';
+    if (moduleKey === 'casualties' && !next.recordType) next.recordType = 'נפגע רכוש';
+    return next;
+  }
+
+  function buildAdminModulePayload(moduleKey, values, existingItem) {
+    const config = getAdminModuleConfig(moduleKey);
+    const normalized = normalizeAdminModuleValues(moduleKey, values);
+    const payload = {
+      Title: buildAdminModuleTitle(moduleKey, normalized)
+    };
+    (config && Array.isArray(config.fields) ? config.fields : []).forEach((field) => {
+      const value = normalized[field.key];
+      if (field.spType === 'DateTime') {
+        payload[field.internalName] = value ? `${value}T12:00:00Z` : null;
+        return;
+      }
+      payload[field.internalName] = value || '';
+    });
+    if (moduleKey === 'operations') {
+      const nextStatus = normalized.handlingStatus || 'פתוח';
+      const previousStatus = existingItem ? normalizeAdminTextValue(existingItem.handlingStatus) : '';
+      const tracked = nextStatus === 'פתוח' || nextStatus === 'בטיפול';
+      const statusChanged = !existingItem || previousStatus !== nextStatus;
+      payload.StatusSince = tracked
+        ? (statusChanged
+          ? new Date().toISOString()
+          : String(existingItem && existingItem.statusSince || existingItem && existingItem.createdAt || new Date().toISOString()))
+        : null;
+    }
+    return payload;
+  }
+
+  function formatAdminDateTime(value) {
+    const date = value ? new Date(value) : null;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '—';
+    try {
+      return new Intl.DateTimeFormat('he-IL', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      }).format(date);
+    } catch (error) {
+      return String(value || '—');
+    }
+  }
+
+  function formatAdminDateOnly(value) {
+    const safe = normalizeAdminDateValue(value);
+    if (!safe) return '—';
+    return App.formatDateLabel(safe);
+  }
+
+  function formatElapsedDuration(value) {
+    const date = value ? new Date(value) : null;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '—';
+    let minutes = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
+    const days = Math.floor(minutes / 1440);
+    minutes -= days * 1440;
+    const hours = Math.floor(minutes / 60);
+    minutes -= hours * 60;
+    const parts = [];
+    if (days) parts.push(`${App.formatNumber(days)} ימים`);
+    if (hours || days) parts.push(`${App.formatNumber(hours)} שעות`);
+    parts.push(`${App.formatNumber(minutes)} דק׳`);
+    return parts.join(' • ');
+  }
+
+  function isOperationsTimerActive(item) {
+    const status = normalizeAdminTextValue(item && item.handlingStatus || '');
+    return status === 'פתוח' || status === 'בטיפול';
+  }
+
+  function renderOperationsStatusBadge(status) {
+    const safeStatus = normalizeAdminTextValue(status || '');
+    const tone = safeStatus === 'פתוח'
+      ? 'is-open'
+      : safeStatus === 'בטיפול'
+        ? 'is-progress'
+        : safeStatus === 'מוקפא'
+          ? 'is-paused'
+          : safeStatus === 'סגור'
+            ? 'is-closed'
+            : '';
+    return `<span class="admin-status-badge ${tone}">${App.escapeHtml(safeStatus || 'ללא סטטוס')}</span>`;
+  }
+
+  function renderOperationsTimer(item) {
+    if (!isOperationsTimerActive(item)) return '<span class="admin-duration-badge is-idle">לא פעיל</span>';
+    const source = String(item && item.statusSince || item && item.createdAt || '').trim();
+    if (!source) return '<span class="admin-duration-badge is-idle">ללא טיימר</span>';
+    return `<span class="admin-duration-badge is-live" data-duration-from="${App.escapeHtml(source)}">${App.escapeHtml(formatElapsedDuration(source))}</span>`;
+  }
+
+  function refreshAdminLiveDurations() {
+    document.querySelectorAll('[data-duration-from]').forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      element.textContent = formatElapsedDuration(element.dataset.durationFrom || '');
+    });
+  }
+
+  function ensureAdminLiveTimer() {
+    if (state.liveTimerId) return;
+    state.liveTimerId = window.setInterval(refreshAdminLiveDurations, 30000);
+  }
+
+  function renderAdminModuleMeta(moduleKey) {
+    const config = getAdminModuleConfig(moduleKey);
+    const moduleState = getAdminModuleState(moduleKey);
+    const meta = config ? byId(config.metaId) : null;
+    if (!config || !(meta instanceof HTMLElement) || !moduleState) return;
+    if (moduleState.busy && !moduleState.loaded) {
+      meta.textContent = 'טוען נתונים מ-SharePoint...';
+      return;
+    }
+    if (moduleState.error) {
+      meta.textContent = moduleState.error;
+      return;
+    }
+    const count = Array.isArray(moduleState.items) ? moduleState.items.length : 0;
+    const listText = moduleState.listTitle ? ` • SharePoint: ${moduleState.listTitle}` : '';
+    const schemaText = moduleState.schemaWarning ? ` • ${moduleState.schemaWarning}` : '';
+    meta.textContent = `${App.formatNumber(count)} רשומות${listText}${schemaText}`;
+  }
+
+  function adminModuleActionButtons(moduleKey, itemId) {
+    return `
+      <div class="admin-record-actions">
+        <button type="button" class="row-action-btn" data-module-action="edit" data-module-key="${moduleKey}" data-item-id="${itemId}" title="עריכה"><i class="fas fa-pen" aria-hidden="true"></i></button>
+        <button type="button" class="row-action-btn danger" data-module-action="delete" data-module-key="${moduleKey}" data-item-id="${itemId}" title="מחיקה"><i class="fas fa-trash" aria-hidden="true"></i></button>
+      </div>
+    `;
+  }
+
+  function renderAdminModuleTable(moduleKey, items) {
+    if (moduleKey === 'operations') {
+      const rows = items.map((item) => `
+        <tr>
+          <td class="admin-table-actions">${adminModuleActionButtons(moduleKey, Number(item.id || 0))}</td>
+          <td>${App.escapeHtml(formatAdminDateTime(item.createdAt))}</td>
+          <td>${App.escapeHtml(item.operatorName || '—')}</td>
+          <td><div class="admin-rich-cell">${App.escapeHtml(item.eventDetails || '—')}</div></td>
+          <td>${renderOperationsStatusBadge(item.handlingStatus)}</td>
+          <td>${renderOperationsTimer(item)}</td>
+          <td><div class="admin-rich-cell">${App.escapeHtml(item.additionalNotes || '—')}</div></td>
+        </tr>
+      `).join('');
+      return `
+        <div class="table-grid-shell">
+          <div class="table-grid-scroll">
+            <table class="admin-table admin-module-table">
+              <thead>
+                <tr>
+                  <th>פעולות</th>
+                  <th>תאריך ושעה</th>
+                  <th>גורם מפעיל</th>
+                  <th>פירוט האירוע</th>
+                  <th>סטטוס טיפול</th>
+                  <th>טיימר</th>
+                  <th>הערות נוספות</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+    const rows = items.map((item) => `
+      <tr>
+        <td class="admin-table-actions">${adminModuleActionButtons(moduleKey, Number(item.id || 0))}</td>
+        <td>${App.escapeHtml(item.recordType || '—')}</td>
+        <td>${App.escapeHtml(formatAdminDateOnly(item.impactDate))}</td>
+        <td>${App.escapeHtml(item.personalNumber || '—')}</td>
+        <td>${App.escapeHtml(item.rank || '—')}</td>
+        <td>${App.escapeHtml(item.firstName || '—')}</td>
+        <td>${App.escapeHtml(item.lastName || '—')}</td>
+        <td>${App.escapeHtml(item.serviceType || '—')}</td>
+        <td>${App.escapeHtml(item.familyStatus || '—')}</td>
+        <td><div class="admin-rich-cell">${App.escapeHtml(item.indications || '—')}</div></td>
+        <td>${App.escapeHtml(item.unit || '—')}</td>
+        <td>${App.escapeHtml(item.squadron || '—')}</td>
+        <td>${App.escapeHtml(item.address || '—')}</td>
+        <td>${App.escapeHtml(item.phone || '—')}</td>
+        <td>${App.escapeHtml(item.impactType || '—')}</td>
+        <td>${App.escapeHtml(item.severity || '—')}</td>
+        <td>${App.escapeHtml(item.housingOwned || '—')}</td>
+        <td>${App.escapeHtml(item.livesAtHome || '—')}</td>
+        <td>${App.escapeHtml(item.isEvacuated || '—')}</td>
+        <td>${App.escapeHtml(item.evacuationAddress || '—')}</td>
+        <td><div class="admin-rich-cell">${App.escapeHtml(item.notes || '—')}</div></td>
+        <td>${App.escapeHtml(item.responseStatus || '—')}</td>
+      </tr>
+    `).join('');
+    return `
+      <div class="table-grid-shell">
+        <div class="table-grid-scroll">
+          <table class="admin-table admin-module-table">
+            <thead>
+              <tr>
+                <th>פעולות</th>
+                <th>סוג</th>
+                <th>תאריך פגיעה</th>
+                <th>מספר אישי</th>
+                <th>דרגה</th>
+                <th>שם פרטי</th>
+                <th>שם משפחה</th>
+                <th>סוג שירות</th>
+                <th>סטטוס משפחה</th>
+                <th>אינדיקציות</th>
+                <th>יחידה</th>
+                <th>טייסת</th>
+                <th>כתובת</th>
+                <th>טלפון</th>
+                <th>סוג הפגיעה</th>
+                <th>סיווג החומרה</th>
+                <th>בית בבעלות המשרה?</th>
+                <th>מתגורר בבית?</th>
+                <th>האם פונה?</th>
+                <th>כתובת פינוי</th>
+                <th>הערות</th>
+                <th>סטטוס מענה</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderAdminModuleCards(moduleKey, items) {
+    if (moduleKey === 'operations') {
+      return `<div class="admin-record-card-grid">${items.map((item) => `
+        <article class="admin-record-card admin-record-card-operations">
+          <div class="admin-record-card-head">
+            <div>
+              <strong>${App.escapeHtml((item.eventDetails || 'אירוע מבצעי').slice(0, 140))}</strong>
+              <span>${App.escapeHtml(formatAdminDateTime(item.createdAt))}</span>
+            </div>
+            ${renderOperationsStatusBadge(item.handlingStatus)}
+          </div>
+          <div class="admin-record-card-tags">
+            <span class="admin-inline-chip"><i class="fas fa-user"></i><span>${App.escapeHtml(item.operatorName || 'ללא גורם מפעיל')}</span></span>
+            ${renderOperationsTimer(item)}
+          </div>
+          <div class="admin-record-card-body">${App.escapeHtml(item.additionalNotes || 'ללא הערות נוספות')}</div>
+          ${adminModuleActionButtons(moduleKey, Number(item.id || 0))}
+        </article>
+      `).join('')}</div>`;
+    }
+    return `<div class="admin-record-card-grid">${items.map((item) => {
+      const fullName = [item.firstName, item.lastName].filter(Boolean).join(' ').trim() || item.personalNumber || 'רשומה ללא שם';
+      return `
+        <article class="admin-record-card admin-record-card-casualty">
+          <div class="admin-record-card-head">
+            <div>
+              <strong>${App.escapeHtml(fullName)}</strong>
+              <span>${App.escapeHtml(item.personalNumber || 'ללא מספר אישי')}</span>
+            </div>
+            <span class="admin-status-badge is-neutral">${App.escapeHtml(item.recordType || 'רשומה')}</span>
+          </div>
+          <div class="admin-record-card-tags">
+            ${item.severity ? `<span class="admin-inline-chip">${App.escapeHtml(item.severity)}</span>` : ''}
+            ${item.responseStatus ? `<span class="admin-inline-chip">${App.escapeHtml(item.responseStatus)}</span>` : ''}
+            ${item.unit ? `<span class="admin-inline-chip">${App.escapeHtml(item.unit)}</span>` : ''}
+          </div>
+          <dl class="admin-record-card-details">
+            <div><dt>תאריך פגיעה</dt><dd>${App.escapeHtml(formatAdminDateOnly(item.impactDate))}</dd></div>
+            <div><dt>דרגה</dt><dd>${App.escapeHtml(item.rank || '—')}</dd></div>
+            <div><dt>טייסת</dt><dd>${App.escapeHtml(item.squadron || '—')}</dd></div>
+            <div><dt>טלפון</dt><dd>${App.escapeHtml(item.phone || '—')}</dd></div>
+            <div><dt>כתובת</dt><dd>${App.escapeHtml(item.address || '—')}</dd></div>
+            <div><dt>כתובת פינוי</dt><dd>${App.escapeHtml(item.evacuationAddress || '—')}</dd></div>
+          </dl>
+          ${item.notes ? `<div class="admin-record-card-body">${App.escapeHtml(item.notes)}</div>` : ''}
+          ${adminModuleActionButtons(moduleKey, Number(item.id || 0))}
+        </article>
+      `;
+    }).join('')}</div>`;
+  }
+
+  function describeAdminModuleError(error) {
+    const message = String(error || '').trim();
+    if (!message) {
+      return 'החיבור לנתונים לא הושלם. בדקו את ההגדרות ונסו לרענן שוב.';
+    }
+    if (/failed to fetch/i.test(message)) {
+      return 'לא הצלחנו להגיע כרגע ל-SharePoint או לקובץ המקור. בדקו הרשאות, קישור ושם רשימה ונסו שוב.';
+    }
+    return message;
+  }
+
+  function renderAdminModuleEmptyState(options) {
+    const safeOptions = options && typeof options === 'object' ? options : {};
+    const kind = String(safeOptions.kind || 'empty');
+    const title = String(safeOptions.title || 'אין נתונים להצגה');
+    const message = String(safeOptions.message || '').trim();
+    const iconByKind = {
+      loading: 'fa-arrows-rotate',
+      error: 'fa-plug-circle-xmark',
+      empty: 'fa-inbox'
+    };
+    return `
+      <div class="module-empty is-${App.escapeHtml(kind)}">
+        <span class="module-empty-icon" aria-hidden="true"><i class="fas ${App.escapeHtml(iconByKind[kind] || iconByKind.empty)}"></i></span>
+        <strong>${App.escapeHtml(title)}</strong>
+        <p>${App.escapeHtml(message)}</p>
+      </div>
+    `;
+  }
+
+  function renderAdminModule(moduleKey) {
+    const config = getAdminModuleConfig(moduleKey);
+    const moduleState = getAdminModuleState(moduleKey);
+    const host = config ? byId(config.boardId) : null;
+    if (!config || !(host instanceof HTMLElement) || !moduleState) return;
+    renderAdminModuleMeta(moduleKey);
+    const items = Array.isArray(moduleState.items) ? moduleState.items : [];
+    if (moduleState.busy && !moduleState.loaded) {
+      host.innerHTML = renderAdminModuleEmptyState({
+        kind: 'loading',
+        title: 'טוען נתונים',
+        message: 'אנחנו מושכים עכשיו את הרשומות מ-SharePoint.'
+      });
+      return;
+    }
+    if (moduleState.error && !items.length) {
+      host.innerHTML = renderAdminModuleEmptyState({
+        kind: 'error',
+        title: 'לא הצלחנו לטעון נתונים',
+        message: describeAdminModuleError(moduleState.error)
+      });
+      return;
+    }
+    if (!items.length) {
+      host.innerHTML = renderAdminModuleEmptyState({
+        kind: 'empty',
+        title: `אין ${config.title} עדיין`,
+        message: 'אפשר להתחיל עם הוספת רשומה חדשה, או לטעון נתונים מהרשימה הקיימת.'
+      });
+      return;
+    }
+    host.innerHTML = moduleState.view === 'cards'
+      ? renderAdminModuleCards(moduleKey, items)
+      : renderAdminModuleTable(moduleKey, items);
+    document.querySelectorAll(`[data-module-view="${moduleKey}"]`).forEach((button) => {
+      const active = String(button.getAttribute('data-view') || '') === moduleState.view;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    refreshAdminLiveDurations();
+  }
+
+  async function loadAdminModuleItems(moduleKey, forceRefresh) {
+    const moduleState = getAdminModuleState(moduleKey);
+    const config = getAdminModuleConfig(moduleKey);
+    if (!moduleState || !config) return [];
+    if (moduleState.loadingPromise && !forceRefresh) return moduleState.loadingPromise;
+    moduleState.busy = true;
+    if (forceRefresh) {
+      moduleState.error = '';
+      moduleState.schemaWarning = '';
+    }
+    renderAdminModule(moduleKey);
+    moduleState.loadingPromise = (async () => {
+      const listTitle = await ensureAdminModuleListReady(moduleKey, state.settings);
+      const selectSpec = await resolveAdminModuleSelectSpec(moduleKey, listTitle);
+      const rows = await App.listItems(listTitle, `?$top=5000&$select=${selectSpec.selectFields}&$orderby=Created desc`);
+      moduleState.items = rows.map((row) => normalizeAdminModuleItem(moduleKey, row));
+      moduleState.loaded = true;
+      moduleState.error = '';
+      moduleState.schemaWarning = selectSpec.missingFields.length
+        ? `עדיין חסרים ${App.formatNumber(selectSpec.missingFields.length)} שדות`
+        : '';
+      moduleState.listTitle = listTitle;
+      return moduleState.items;
+    })().catch((error) => {
+      moduleState.error = error && error.message ? String(error.message) : 'שגיאה בטעינת הרשומות.';
+      moduleState.schemaWarning = '';
+      if (!moduleState.loaded) moduleState.items = [];
+      return moduleState.items;
+    }).finally(() => {
+      moduleState.busy = false;
+      moduleState.loadingPromise = null;
+      renderAdminModule(moduleKey);
+      renderAdminChrome();
+    });
+    return moduleState.loadingPromise;
+  }
+
+  function invalidateAdminModule(moduleKey) {
+    const moduleState = getAdminModuleState(moduleKey);
+    if (!moduleState) return;
+    moduleState.loaded = false;
+    moduleState.error = '';
+    moduleState.schemaWarning = '';
+    moduleState.listTitle = '';
+    moduleState.items = [];
+    renderAdminModule(moduleKey);
+  }
+
+  async function deleteAdminModuleItem(moduleKey, itemId) {
+    const config = getAdminModuleConfig(moduleKey);
+    const item = getAdminModuleItemById(moduleKey, itemId);
+    if (!config || !item) return;
+    if (!window.confirm(`למחוק את ${config.singular} "${buildAdminModuleTitle(moduleKey, item)}"?`)) return;
+    try {
+      const listTitle = await ensureAdminModuleListReady(moduleKey, state.settings);
+      await App.deleteListItem(listTitle, itemId);
+      const moduleState = getAdminModuleState(moduleKey);
+      moduleState.items = moduleState.items.filter((entry) => Number(entry.id || 0) !== Number(itemId || 0));
+      renderAdminModule(moduleKey);
+      renderAdminChrome();
+      setStatus(`${config.singular} נמחקה.`, 'ok');
+    } catch (error) {
+      setStatus(error.message || 'שגיאה במחיקת הרשומה.', 'err');
+    }
+  }
+
+  function normalizeLookupPersonalNumber(value) {
+    return String(value || '').replace(/[^\d]/g, '').trim();
+  }
+
+  function normalizeHeaderToken(value) {
+    return App.normalizeSearchText(String(value || '')).replace(/\s+/g, ' ').trim();
+  }
+
+  function findWorkbookHeaderIndex(aliases) {
+    const headerTokens = (Array.isArray(state.headers) ? state.headers : []).map((header) => normalizeHeaderToken(header));
+    const wanted = (Array.isArray(aliases) ? aliases : []).map((item) => normalizeHeaderToken(item)).filter(Boolean);
+    if (!wanted.length || !headerTokens.length) return -1;
+    let exactIndex = -1;
+    for (let index = 0; index < headerTokens.length; index += 1) {
+      if (wanted.includes(headerTokens[index])) {
+        exactIndex = index;
+        break;
+      }
+    }
+    if (exactIndex >= 0) return exactIndex;
+    return headerTokens.findIndex((token) => wanted.some((alias) => token.includes(alias) || alias.includes(token)));
+  }
+
+  function workbookRowValueByAliases(row, aliases) {
+    const index = findWorkbookHeaderIndex(aliases);
+    if (index < 0 || !Array.isArray(row)) return '';
+    return normalizeAdminTextValue(row[index] || '');
+  }
+
+  function findWorkbookPersonMatch(personalNumber) {
+    const safePersonalNumber = normalizeLookupPersonalNumber(personalNumber);
+    if (!safePersonalNumber || !Array.isArray(state.groupSelectionRows) || !state.groupSelectionRows.length) return null;
+    const personalIndex = findWorkbookHeaderIndex(PERSON_LOOKUP_ALIASES.personalNumber);
+    if (personalIndex < 0) return null;
+    const row = state.groupSelectionRows.find((entry) => normalizeLookupPersonalNumber(Array.isArray(entry) ? entry[personalIndex] : '') === safePersonalNumber);
+    if (!row) return null;
+    const out = {
+      personalNumber: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.personalNumber) || safePersonalNumber,
+      rank: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.rank),
+      firstName: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.firstName),
+      lastName: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.lastName),
+      fullName: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.fullName),
+      serviceType: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.serviceType),
+      familyStatus: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.familyStatus),
+      indications: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.indications),
+      unit: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.unit),
+      squadron: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.squadron),
+      address: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.address),
+      phone: workbookRowValueByAliases(row, PERSON_LOOKUP_ALIASES.phone)
+    };
+    if (!out.fullName) out.fullName = [out.firstName, out.lastName].filter(Boolean).join(' ').trim();
+    return out;
+  }
+
+  function buildLookupPatch(moduleKey, match) {
+    const source = match && typeof match === 'object' ? match : {};
+    if (moduleKey === 'operations') {
+      return {
+        operatorName: [source.rank, source.fullName || source.personalNumber, source.unit].filter(Boolean).join(' • ')
+      };
+    }
+    return {
+      personalNumber: source.personalNumber || '',
+      rank: source.rank || '',
+      firstName: source.firstName || '',
+      lastName: source.lastName || '',
+      serviceType: source.serviceType || '',
+      familyStatus: source.familyStatus || '',
+      indications: source.indications || '',
+      unit: source.unit || '',
+      squadron: source.squadron || '',
+      address: source.address || '',
+      phone: source.phone || ''
+    };
+  }
+
+  function getAdminRecordDialog() {
+    const dialog = byId('adminRecordDialog');
+    return dialog instanceof HTMLDialogElement ? dialog : null;
+  }
+
+  function closeAdminRecordDialog() {
+    const dialog = getAdminRecordDialog();
+    if (!dialog) return;
+    if (dialog.open) dialog.close();
+    state.recordDialog = {
+      moduleKey: '',
+      mode: 'create',
+      itemId: 0,
+      lookupMatch: null
+    };
+  }
+
+  function renderAdminRecordField(def, value) {
+    const safeValue = value == null ? '' : String(value);
+    const classes = ['field'];
+    if (def.span === 'span-all') classes.push('span-all');
+    const label = App.escapeHtml(def.label || def.key);
+    if (def.input === 'textarea') {
+      return `
+        <div class="${classes.join(' ')}">
+          <label for="recordField-${App.escapeHtml(def.key)}">${label}</label>
+          <textarea id="recordField-${App.escapeHtml(def.key)}" data-record-field="${App.escapeHtml(def.key)}" rows="${Number(def.rows || 3)}">${App.escapeHtml(safeValue)}</textarea>
+        </div>
+      `;
+    }
+    if (def.input === 'select') {
+      const options = []
+        .concat(def.allowBlank === false ? [] : [''])
+        .concat(Array.isArray(def.options) ? def.options : [])
+        .map((option) => {
+        const safeOption = String(option || '');
+        const label = safeOption ? safeOption : '—';
+        return `<option value="${App.escapeHtml(safeOption)}"${safeOption === safeValue ? ' selected' : ''}>${App.escapeHtml(label)}</option>`;
+      }).join('');
+      return `
+        <div class="${classes.join(' ')}">
+          <label for="recordField-${App.escapeHtml(def.key)}">${label}</label>
+          <select id="recordField-${App.escapeHtml(def.key)}" data-record-field="${App.escapeHtml(def.key)}">${options}</select>
+        </div>
+      `;
+    }
+    return `
+      <div class="${classes.join(' ')}">
+        <label for="recordField-${App.escapeHtml(def.key)}">${label}</label>
+        <input id="recordField-${App.escapeHtml(def.key)}" type="${App.escapeHtml(def.input || 'text')}" value="${App.escapeHtml(safeValue)}" data-record-field="${App.escapeHtml(def.key)}">
+      </div>
+    `;
+  }
+
+  function readAdminRecordDialogValues(moduleKey) {
+    const config = getAdminModuleConfig(moduleKey);
+    const out = {};
+    (config && Array.isArray(config.fields) ? config.fields : []).forEach((field) => {
+      const element = document.querySelector(`[data-record-field="${field.key}"]`);
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+        out[field.key] = element.value;
+      }
+    });
+    return normalizeAdminModuleValues(moduleKey, out);
+  }
+
+  function setAdminRecordFieldValue(fieldKey, value) {
+    const element = document.querySelector(`[data-record-field="${fieldKey}"]`);
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+      element.value = String(value || '');
+    }
+  }
+
+  function setAdminRecordLookupStatus(message, kind, showApply) {
+    const status = byId('adminRecordLookupStatus');
+    const actions = byId('adminRecordLookupActions');
+    if (status instanceof HTMLElement) {
+      status.className = `section-note${kind ? ` ${kind}` : ''}`;
+      status.textContent = message || '';
+    }
+    if (actions instanceof HTMLElement) actions.classList.toggle('hidden', !showApply);
+  }
+
+  function performAdminRecordLookup() {
+    const moduleKey = String(state.recordDialog.moduleKey || '').trim();
+    if (!moduleKey) return;
+    const lookupInput = byId('adminRecordLookupInput');
+    let lookupValue = lookupInput instanceof HTMLInputElement ? lookupInput.value : '';
+    if (!lookupValue && moduleKey === 'casualties') {
+      const values = readAdminRecordDialogValues(moduleKey);
+      lookupValue = values.personalNumber || '';
+      if (lookupInput instanceof HTMLInputElement) lookupInput.value = lookupValue;
+    }
+    if (!normalizeLookupPersonalNumber(lookupValue)) {
+      state.recordDialog.lookupMatch = null;
+      setAdminRecordLookupStatus('הזינו מספר אישי כדי לאתר התאמה במאגר.', 'warn', false);
+      return;
+    }
+    const match = findWorkbookPersonMatch(lookupValue);
+    if (!match) {
+      state.recordDialog.lookupMatch = null;
+      setAdminRecordLookupStatus('לא נמצאה התאמה במאגר. אפשר להמשיך להזין ידנית.', 'warn', false);
+      return;
+    }
+    state.recordDialog.lookupMatch = match;
+    const previewName = match.fullName || match.personalNumber || 'רשומה';
+    setAdminRecordLookupStatus(`נמצאה התאמה עבור ${previewName}. אפשר למלא שדות רלוונטיים מהמאגר.`, 'ok', true);
+  }
+
+  function applyAdminRecordLookup() {
+    const moduleKey = String(state.recordDialog.moduleKey || '').trim();
+    const match = state.recordDialog.lookupMatch;
+    if (!moduleKey || !match) return;
+    const patch = buildLookupPatch(moduleKey, match);
+    const currentValues = readAdminRecordDialogValues(moduleKey);
+    const changedFields = Object.keys(patch).filter((key) => !normalizeAdminTextValue(currentValues[key] || '') && normalizeAdminTextValue(patch[key] || ''));
+    changedFields.forEach((key) => {
+      setAdminRecordFieldValue(key, patch[key]);
+    });
+    if (!changedFields.length) {
+      setAdminRecordLookupStatus('כל השדות המתאימים כבר מלאים. אפשר לעדכן ידנית אם צריך.', 'warn', true);
+      return;
+    }
+    setAdminRecordLookupStatus(`מולאו ${App.formatNumber(changedFields.length)} שדות רלוונטיים מהמאגר.`, 'ok', true);
+  }
+
+  function openAdminRecordDialog(moduleKey, mode, itemId) {
+    const config = getAdminModuleConfig(moduleKey);
+    const dialog = getAdminRecordDialog();
+    if (!config || !dialog) return;
+    const existingItem = mode === 'edit' ? getAdminModuleItemById(moduleKey, itemId) : null;
+    const values = existingItem ? { ...existingItem } : emptyAdminModuleRecord(moduleKey);
+    state.recordDialog = {
+      moduleKey,
+      mode: mode === 'edit' ? 'edit' : 'create',
+      itemId: Number(existingItem && existingItem.id || 0),
+      lookupMatch: null
+    };
+    const title = byId('adminRecordDialogTitle');
+    const submit = byId('submitAdminRecordBtn');
+    const meta = byId('adminRecordDialogMeta');
+    const lookupSection = byId('adminRecordLookupSection');
+    const lookupInput = byId('adminRecordLookupInput');
+    const lookupLabel = byId('adminRecordLookupInputLabel');
+    const lookupTitle = byId('adminRecordLookupTitle');
+    const fieldsHost = byId('adminRecordFields');
+    if (title) title.textContent = mode === 'edit' ? `עריכת ${config.singular}` : `הוספת ${config.singular}`;
+    if (submit instanceof HTMLButtonElement) {
+      submit.textContent = mode === 'edit' ? 'שמור שינויים' : `הוסף ${config.singular}`;
+      submit.disabled = false;
+    }
+    if (meta instanceof HTMLElement) {
+      const metaText = existingItem
+        ? `נוצר: ${formatAdminDateTime(existingItem.createdAt)} • עודכן: ${formatAdminDateTime(existingItem.modifiedAt)}`
+        : `הרשומה תישמר ב-SharePoint ברשימת ${config.title}.`;
+      meta.textContent = metaText;
+      meta.classList.remove('hidden');
+    }
+    if (lookupSection instanceof HTMLElement) lookupSection.classList.remove('hidden');
+    if (lookupInput instanceof HTMLInputElement) {
+      lookupInput.value = moduleKey === 'casualties' ? String(values.personalNumber || '') : '';
+      lookupInput.placeholder = moduleKey === 'operations' ? 'מספר אישי של הגורם המפעיל' : 'מספר אישי לאיתור מהיר';
+    }
+    if (lookupLabel instanceof HTMLElement) lookupLabel.textContent = moduleKey === 'operations' ? 'איתור מפעיל לפי מספר אישי' : 'איתור פרטים לפי מספר אישי';
+    if (lookupTitle instanceof HTMLElement) lookupTitle.textContent = moduleKey === 'operations' ? 'איתור גורם מפעיל מהמאגר' : 'איתור פרטי נפגע/רכוש מהמאגר';
+    setAdminRecordLookupStatus(moduleKey === 'operations'
+      ? 'אפשר למשוך את שם המפעיל מהמאגר המרכזי לפי מספר אישי.'
+      : 'אם המספר האישי קיים במאגר הראשי, אפשר למלא ממנו שדות רלוונטיים.',
+    '', false);
+    if (fieldsHost instanceof HTMLElement) {
+      fieldsHost.innerHTML = (config.fields || []).map((field) => renderAdminRecordField(field, values[field.key])).join('');
+    }
+    if (!dialog.open) dialog.showModal();
+    const firstField = fieldsHost && fieldsHost.querySelector('[data-record-field]');
+    if (firstField instanceof HTMLElement && typeof firstField.focus === 'function') firstField.focus();
+  }
+
+  async function submitAdminRecordDialog() {
+    const moduleKey = String(state.recordDialog.moduleKey || '').trim();
+    const config = getAdminModuleConfig(moduleKey);
+    const submitButton = byId('submitAdminRecordBtn');
+    if (!moduleKey || !config) return;
+    const existingItem = state.recordDialog.mode === 'edit' ? getAdminModuleItemById(moduleKey, state.recordDialog.itemId) : null;
+    const values = readAdminRecordDialogValues(moduleKey);
+    const requiredMissing = (config.fields || []).find((field) => field.required && !normalizeAdminTextValue(values[field.key] || ''));
+    if (requiredMissing) {
+      setStatus(`יש למלא את השדה "${requiredMissing.label}".`, 'warn');
+      return;
+    }
+    try {
+      if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
+      const listTitle = await ensureAdminModuleListReady(moduleKey, state.settings);
+      const payload = buildAdminModulePayload(moduleKey, values, existingItem);
+      if (existingItem && existingItem.id) {
+        await App.updateListItem(listTitle, existingItem.id, payload);
+      } else {
+        await App.createListItem(listTitle, payload);
+      }
+      closeAdminRecordDialog();
+      await loadAdminModuleItems(moduleKey, true);
+      setStatus(existingItem ? `${config.singular} עודכנה.` : `${config.singular} נוספה.`, 'ok');
+    } catch (error) {
+      setStatus(error.message || 'שגיאה בשמירת הרשומה.', 'err');
+    } finally {
+      if (submitButton instanceof HTMLButtonElement) submitButton.disabled = false;
+    }
+  }
+
+  function renderAdminRecordModules() {
+    renderAdminModule('operations');
+    renderAdminModule('casualties');
+  }
+
+  function ensureAdminRecordModulesLoaded(forceRefresh) {
+    if (!state.unlocked) return;
+    loadAdminModuleItems('operations', !!forceRefresh).catch((error) => {
+      const moduleState = getAdminModuleState('operations');
+      if (moduleState) {
+        moduleState.error = error && error.message ? String(error.message) : 'שגיאה בטעינת יומן מבצעים.';
+        renderAdminModule('operations');
+      }
+    });
+    loadAdminModuleItems('casualties', !!forceRefresh).catch((error) => {
+      const moduleState = getAdminModuleState('casualties');
+      if (moduleState) {
+        moduleState.error = error && error.message ? String(error.message) : 'שגיאה בטעינת נפגעים ורכוש.';
+        renderAdminModule('casualties');
+      }
+    });
+  }
+
+  function renderSaveState() {
+    const indicator = byId('saveIndicator');
+    const note = byId('saveBarNote');
+    const saveButton = byId('saveBtn');
+    const passwordButton = byId('changePasswordBtn');
+    if (!indicator || !note) return;
+    if (!state.unlocked) {
+      indicator.className = 'save-indicator';
+      indicator.textContent = 'ניהול נעול';
+      note.textContent = '';
+      if (saveButton instanceof HTMLButtonElement) {
+        saveButton.disabled = true;
+        saveButton.hidden = true;
+      }
+      if (passwordButton instanceof HTMLButtonElement) passwordButton.disabled = true;
+      return;
+    }
+    if (state.saving) {
+      indicator.className = 'save-indicator';
+      indicator.textContent = 'שומר...';
+      note.textContent = '';
+      if (saveButton instanceof HTMLButtonElement) {
+        saveButton.disabled = true;
+        saveButton.hidden = false;
+      }
+      if (passwordButton instanceof HTMLButtonElement) passwordButton.disabled = true;
+      return;
+    }
+    const dirty = hasUnsavedAdminChanges();
+    indicator.className = `save-indicator${dirty ? ' is-dirty' : ' is-ok'}`;
+    indicator.textContent = dirty ? 'טיוטה פעילה' : 'הכול שמור';
+    note.textContent = '';
+    if (saveButton instanceof HTMLButtonElement) {
+      saveButton.disabled = !dirty;
+      saveButton.hidden = false;
+    }
+    if (passwordButton instanceof HTMLButtonElement) passwordButton.disabled = false;
+  }
+
+  function renderAdminIdentity() {
+    const container = document.querySelector('.qb-sidebar .qb-side-user');
+    if (!(container instanceof HTMLElement)) return;
+    const avatar = byId('adminSidebarAvatar') || container.querySelector('.qb-side-avatar');
+    const title = byId('adminSidebarTitle') || container.querySelector('strong');
+    let subtitle = byId('adminSidebarSubtitle') || container.querySelector('span');
+    const titleWrap = title && title.parentElement ? title.parentElement : container.querySelector('div:last-child');
+    if (!subtitle && titleWrap instanceof HTMLElement) {
+      subtitle = document.createElement('span');
+      titleWrap.appendChild(subtitle);
+    }
+    const displayName = App.getUserDisplayName(state.currentUser);
+    if (avatar) avatar.textContent = App.getUserAvatarText(state.currentUser, 'AD');
+    if (title) title.textContent = displayName || 'ניהול';
+    if (subtitle) subtitle.textContent = 'מנהל';
+  }
+
+  async function hydrateAdminIdentity() {
+    try {
+      state.currentUser = await App.getCurrentUser();
+      renderAdminChrome();
+    } catch (error) {}
+  }
+
+  function renderAdminChrome() {
+    renderAdminIdentity();
+    renderAdminTabHint();
+    renderAdminOverview();
+    renderSaveState();
+  }
+
+  function rememberSavedState() {
+    state.lastSavedSnapshot = buildSettingsSnapshot(state.settings);
+    state.lastSavedAtText = formatAdminClock(new Date());
+    state.saving = false;
+    renderAdminChrome();
+  }
+
+  function renderColumnOptions(selected, catalog) {
+    const sourceCatalog = Array.isArray(catalog) && catalog.length ? catalog : state.catalog;
+    return sourceCatalog.map((item) => {
+      const active = (selected || []).includes(item.letter) ? ' selected' : '';
+      return `<option value="${item.letter}"${active}>${App.escapeHtml(item.label)}</option>`;
+    }).join('');
+  }
+
+  function renderCatalog() {
+    byId('catalog').innerHTML = state.catalog.map((item) => {
+      return `<span class="chip">${App.escapeHtml(item.letter)} | ${App.escapeHtml(item.title)}</span>`;
+    }).join('');
+  }
+
+  function filteredSourceRows() {
+    const rows = Array.isArray(state.groupSelectionRows) ? state.groupSelectionRows : [];
+    const tokens = App.splitSearchTokens(state.unitsSearchText || '');
+    if (!tokens.length) return rows.slice();
+    return rows.filter((cells) => {
+      const haystack = Array.isArray(cells) ? cells.join(' ') : '';
+      return App.matchesSearchTokens(haystack, tokens);
+    });
+  }
+
+  function renderUnitsBoard() {
+    const meta = byId('unitsStatusMeta');
+    const host = byId('unitsStatusBoard');
+    if (!(meta instanceof HTMLElement) || !(host instanceof HTMLElement)) return;
+    const headers = Array.isArray(state.headers) && state.headers.length
+      ? state.headers.slice()
+      : App.resolveSourceHeaders(state.settings, App.getStaticConfig().workbook.columnCount);
+    const allRows = Array.isArray(state.groupSelectionRows) ? state.groupSelectionRows : [];
+    const visibleRows = filteredSourceRows();
+    const originLabel = state.sourceRowsOrigin === 'attendance-fallback'
+      ? 'רשומות יומיות קיימות'
+      : (state.sourceRowsOrigin === 'workbook'
+        ? 'קובץ ייבוא'
+        : 'המאגר הראשי');
+    const visibleColumnIndexes = headers
+      .map((_, index) => index)
+      .filter((index) => visibleRows.some((cells) => String(Array.isArray(cells) ? cells[index] || '' : '').trim()));
+    const columnIndexes = visibleColumnIndexes.length
+      ? visibleColumnIndexes
+      : headers.map((_, index) => index);
+    meta.textContent = allRows.length
+      ? `${App.formatNumber(allRows.length)} רשומות מתוך ${originLabel}${state.unitsSearchText ? ` • מוצגות ${App.formatNumber(visibleRows.length)}` : ''}`
+      : 'המאגר הראשי עדיין ריק. אפשר לייבא אליו Excel, CSV או TXT כדי להזין בסיס נתונים ראשי.';
+    if (!allRows.length) {
+      host.innerHTML = renderAdminModuleEmptyState({
+        kind: 'empty',
+        title: 'אין רשומות במאגר הראשי',
+        message: 'כפתור הייבוא ייצור או יעדכן את בסיס הנתונים הראשי שממנו אפשר להעתיק לתאריכים היומיים.'
+      });
+      return;
+    }
+    if (!visibleRows.length) {
+      host.innerHTML = renderAdminModuleEmptyState({
+        kind: 'empty',
+        title: 'לא נמצאו תוצאות',
+        message: 'נסו חיפוש אחר או נקה את שדה החיפוש כדי לראות את כל הרשומות.'
+      });
+      return;
+    }
+    host.innerHTML = `
+      <div class="table-grid-shell">
+        <div class="table-grid-scroll">
+          <table class="admin-table">
+            <thead>
+              <tr>${columnIndexes.map((index) => `<th>${App.escapeHtml(String(headers[index] || App.indexToColumnLetter(index)))}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+              ${visibleRows.map((cells) => `
+                <tr>${columnIndexes.map((index) => `<td>${App.escapeHtml(String(Array.isArray(cells) ? cells[index] || '' : '') || '—')}</td>`).join('')}</tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSingleColumnOptions(selectedLetter) {
+    const current = App.normalizeColumnLetter(selectedLetter);
+    return state.catalog.map((item) => {
+      const active = current === item.letter ? ' selected' : '';
+      return `<option value="${item.letter}"${active}>${App.escapeHtml(item.label)}</option>`;
+    }).join('');
+  }
+
+  function renderSingleColumnOptionsWithBlank(selectedLetter, blankLabel) {
+    const current = App.normalizeColumnLetter(selectedLetter);
+    return [`<option value="">${App.escapeHtml(blankLabel || '\u05dc\u05dc\u05d0 \u05e2\u05de\u05d5\u05d3\u05d4')}</option>`]
+      .concat(state.catalog.map((item) => {
+        const active = current === item.letter ? ' selected' : '';
+        return `<option value="${item.letter}"${active}>${App.escapeHtml(item.label)}</option>`;
+      }))
+      .join('');
+  }
+
+  function dashboardFieldCatalog() {
+    return [{
+      value: DASHBOARD_GROUP_CATEGORY_FIELD,
+      label: '\u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d5\u05ea \u05de\u05e0\u05d4\u05dc'
+    }].concat(state.catalog.map((item) => ({
+      value: item.letter,
+      label: item.label,
+      title: item.title,
+      letter: item.letter
+    })));
+  }
+
+  function renderDashboardFieldOptions(selected) {
+    const active = new Set((Array.isArray(selected) ? selected : []).map((item) => App.normalizeDashboardField(item)).filter(Boolean));
+    return dashboardFieldCatalog().map((item) => {
+      const isActive = active.has(String(item.value || '').trim()) ? ' selected' : '';
+      return `<option value="${App.escapeHtml(item.value)}"${isActive}>${App.escapeHtml(item.label)}</option>`;
+    }).join('');
+  }
+
+  function renderDashboardSingleFieldOptions(selectedField, blankLabel, allowBlank) {
+    const current = App.normalizeDashboardField(selectedField);
+    const items = allowBlank
+      ? [{ value: '', label: blankLabel || '\u05dc\u05dc\u05d0 \u05e4\u05d9\u05dc\u05d5\u05d7' }].concat(dashboardFieldCatalog())
+      : dashboardFieldCatalog();
+    return items.map((item) => {
+      const value = String(item.value || '').trim();
+      const isActive = current === value ? ' selected' : '';
+      return `<option value="${App.escapeHtml(value)}"${isActive}>${App.escapeHtml(item.label)}</option>`;
+    }).join('');
+  }
+
+  function firstSelectedColumn(list, fallback) {
+    const values = Array.isArray(list) ? list : [];
+    const match = values.map((item) => App.normalizeDashboardField(item)).find(Boolean);
+    return match || App.normalizeDashboardField(fallback);
+  }
+
+  function presetColumnLabel(letter, blankLabel) {
+    const safe = App.normalizeDashboardField(letter);
+    if (!safe) return String(blankLabel || '\u05dc\u05dc\u05d0 \u05e4\u05d9\u05dc\u05d5\u05d7');
+    if (safe === DASHBOARD_GROUP_CATEGORY_FIELD) return '\u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d5\u05ea \u05de\u05e0\u05d4\u05dc';
+    const match = state.catalog.find((item) => item.letter === safe);
+    return match ? `${match.title} (${match.letter})` : safe;
+  }
+
+  function presetChartTypeLabel(value) {
+    const labels = {
+      stacked: 'Stacked',
+      bar: 'Bar',
+      line: 'Line',
+      area: 'Area',
+      pie: 'Pie',
+      donut: 'Donut',
+      radar: 'Radar',
+      radial: 'Radial',
+      polar: 'Polar',
+      heatmap: 'Heatmap',
+      progress: 'Progress',
+      table: 'Cross table',
+      metric: 'Metric'
+    };
+    const key = String(value || 'bar').trim().toLowerCase();
+    return labels[key] || 'Bar';
+  }
+
+  function presetAggregationLabel(value) {
+    const labels = {
+      count: '\u05e1\u05e4\u05d9\u05e8\u05d4',
+      sum: '\u05e1\u05db\u05d5\u05dd',
+      avg: '\u05de\u05de\u05d5\u05e6\u05e2',
+      min: '\u05de\u05d9\u05e0\u05d9\u05de\u05d5\u05dd',
+      max: '\u05de\u05e7\u05e1\u05d9\u05de\u05d5\u05dd'
+    };
+    const key = String(value || 'count').trim().toLowerCase();
+    return labels[key] || labels.count;
+  }
+
+  function presetScopeLabel(value) {
+    const labels = {
+      scoped: '\u05d4\u05e7\u05d1\u05d5\u05e6\u05d4 \u05d4\u05e0\u05d5\u05db\u05d7\u05d9\u05ea',
+      visible: '\u05de\u05d4 \u05e9\u05de\u05d5\u05e6\u05d2 \u05d1\u05d8\u05d1\u05dc\u05d4',
+      all: '\u05db\u05dc \u05d4\u05e0\u05ea\u05d5\u05e0\u05d9\u05dd'
+    };
+    const key = String(value || 'scoped').trim().toLowerCase();
+    return labels[key] || labels.scoped;
+  }
+
+  function buildPresetSummaryText(preset) {
+    const rowLabel = presetColumnLabel(firstSelectedColumn(preset.rowColumns, state.settings.groupColumns[0] || state.catalog[0] && state.catalog[0].letter || 'A'), '\u05d1\u05d7\u05e8\u05d5 \u05e9\u05d3\u05d4 \u05e8\u05d0\u05e9\u05d9');
+    const colLetter = firstSelectedColumn(preset.colColumns, '');
+    const colLabel = colLetter ? presetColumnLabel(colLetter, '') : '';
+    if (colLabel) return `${rowLabel} \u05de\u05d5\u05dc ${colLabel}`;
+    return `\u05e4\u05d9\u05dc\u05d5\u05d7 \u05dc\u05e4\u05d9 ${rowLabel}`;
+  }
+
+  function buildPresetMetaText(preset) {
+    const parts = [
+      presetChartTypeLabel(preset.chartType || 'bar'),
+      presetAggregationLabel(preset.aggregation || 'count'),
+      presetScopeLabel(preset.dataScope || 'scoped')
+    ];
+    if (preset.aggregation && preset.aggregation !== 'count' && preset.valueColumn) {
+      parts.push(presetColumnLabel(preset.valueColumn, ''));
+    }
+    return parts.filter(Boolean).join(' \u2022 ');
+  }
+
+  function setSingleSelectValue(select, value, allowBlank) {
+    if (!(select instanceof HTMLSelectElement)) return;
+    const safe = App.normalizeDashboardField(value);
+    const options = Array.from(select.options);
+    if (safe && options.some((option) => option.value === safe)) {
+      select.value = safe;
+      return;
+    }
+    if (allowBlank && options.some((option) => option.value === '')) {
+      select.value = '';
+      return;
+    }
+    if (options.length) select.value = String(options[0].value || '');
+  }
+
+  function setMultiSelectValues(select, values) {
+    if (!(select instanceof HTMLSelectElement)) return;
+    const active = new Set((Array.isArray(values) ? values : []).map((item) => App.normalizeDashboardField(item)).filter(Boolean));
+    Array.from(select.options).forEach((option) => {
+      option.selected = active.has(String(option.value || '').trim());
+    });
+  }
+
+  function selectedValuesWithPrimary(card, multiSelector, primarySelector) {
+    if (!(card instanceof HTMLElement)) return [];
+    const multi = card.querySelector(multiSelector);
+    const primary = card.querySelector(primarySelector);
+    const values = multi instanceof HTMLSelectElement ? selectedValues(multi) : [];
+    if (values.length) return values;
+    const safePrimary = primary instanceof HTMLSelectElement ? App.normalizeDashboardField(primary.value) : '';
+    return safePrimary ? [safePrimary] : [];
+  }
+
+  function buildPresetCardSnapshot(card) {
+    return {
+      label: String(card.querySelector('.preset-label') && card.querySelector('.preset-label').value || '').trim(),
+      rowColumns: selectedValuesWithPrimary(card, '.preset-rows', '.preset-row-primary'),
+      colColumns: selectedValuesWithPrimary(card, '.preset-cols', '.preset-col-primary'),
+      chartType: String(card.querySelector('.preset-chart-type') && card.querySelector('.preset-chart-type').value || 'bar').trim(),
+      dataScope: String(card.querySelector('.preset-scope') && card.querySelector('.preset-scope').value || 'scoped').trim(),
+      aggregation: String(card.querySelector('.preset-aggregation') && card.querySelector('.preset-aggregation').value || 'count').trim(),
+      valueColumn: String(card.querySelector('.preset-value-column') && card.querySelector('.preset-value-column').value || '').trim()
+    };
+  }
+
+  function updatePresetCardPresentation(card) {
+    if (!(card instanceof HTMLElement)) return;
+    const snapshot = buildPresetCardSnapshot(card);
+    const summary = card.querySelector('.preset-card-summary');
+    const meta = card.querySelector('.preset-card-sub');
+    if (summary) summary.textContent = buildPresetSummaryText(snapshot);
+    if (meta) meta.textContent = buildPresetMetaText(snapshot);
+    const valueField = card.querySelector('.preset-value-field');
+    const valueSelect = card.querySelector('.preset-value-column');
+    const valueNote = valueField && valueField.querySelector('.preset-note');
+    const disabled = snapshot.aggregation === 'count';
+    if (valueField) valueField.classList.toggle('is-disabled', disabled);
+    if (valueSelect instanceof HTMLSelectElement) {
+      valueSelect.disabled = disabled;
+    }
+    if (valueNote) {
+      valueNote.textContent = disabled
+        ? '\u05d1\u05e1\u05e4\u05d9\u05e8\u05ea \u05e8\u05e9\u05d5\u05de\u05d5\u05ea \u05dc\u05d0 \u05e6\u05e8\u05d9\u05da \u05dc\u05d1\u05d7\u05d5\u05e8 \u05e2\u05de\u05d5\u05d3\u05ea \u05e2\u05e8\u05da.'
+        : '\u05d1\u05d7\u05e8\u05d5 \u05e2\u05de\u05d5\u05d3\u05d4 \u05de\u05e1\u05e4\u05e8\u05d9\u05ea \u05e2\u05d1\u05d5\u05e8 \u05d7\u05d9\u05e9\u05d5\u05d1 \u05e9\u05dc \u05e1\u05db\u05d5\u05dd, \u05de\u05de\u05d5\u05e6\u05e2 \u05d0\u05d5 \u05de\u05e7\u05e1\u05d9\u05de\u05d5\u05dd.';
+    }
+  }
+
+  function syncPresetCardSelectors(card, source) {
+    if (!(card instanceof HTMLElement)) return;
+    const rowPrimary = card.querySelector('.preset-row-primary');
+    const colPrimary = card.querySelector('.preset-col-primary');
+    const rowsSelect = card.querySelector('.preset-rows');
+    const colsSelect = card.querySelector('.preset-cols');
+    if (source === 'row-primary') {
+      const safe = rowPrimary instanceof HTMLSelectElement ? App.normalizeDashboardField(rowPrimary.value) : '';
+      setMultiSelectValues(rowsSelect, safe ? [safe] : []);
+    } else if (source === 'col-primary') {
+      const safe = colPrimary instanceof HTMLSelectElement ? App.normalizeDashboardField(colPrimary.value) : '';
+      setMultiSelectValues(colsSelect, safe ? [safe] : []);
+    } else if (source === 'rows') {
+      setSingleSelectValue(rowPrimary, firstSelectedColumn(rowsSelect instanceof HTMLSelectElement ? selectedValues(rowsSelect) : [], state.settings.groupColumns[0] || state.catalog[0] && state.catalog[0].letter || 'A'), false);
+    } else if (source === 'cols') {
+      setSingleSelectValue(colPrimary, firstSelectedColumn(colsSelect instanceof HTMLSelectElement ? selectedValues(colsSelect) : [], ''), true);
+    }
+    updatePresetCardPresentation(card);
+  }
+
+  function parseDropdownOptionTokens(value) {
+    return App.uniqueSorted(
+      String(value || '')
+        .replace(/\r/g, '\n')
+        .split(/[\n,]+/)
+        .flatMap((part) => String(part || '').split('#'))
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    );
+  }
+
+  function renderDropdownOptionChips(options) {
+    const items = Array.isArray(options) ? options : [];
+    if (!items.length) return '<span class="meta">\u05d0\u05d9\u05df \u05d0\u05e4\u05e9\u05e8\u05d5\u05d9\u05d5\u05ea \u05e2\u05d3\u05d9\u05d9\u05df.</span>';
+    return items.map((option) => {
+      return `<button type="button" class="chip-btn remove-dropdown-option" data-value="${App.escapeHtml(option)}">#${App.escapeHtml(option)} | \u05d4\u05e1\u05e8</button>`;
+    }).join('');
+  }
+
+  function readDropdownConfigsFromDom(keepEmpty) {
+    return Array.from(document.querySelectorAll('.dropdown-card')).map((card, index) => {
+      const column = String(card.querySelector('.dropdown-column').value || '').trim();
+      const chipValues = Array.from(card.querySelectorAll('.remove-dropdown-option')).map((button) => String(button.dataset.value || '').trim()).filter(Boolean);
+      const input = card.querySelector('.dropdown-option-input');
+      const pending = parseDropdownOptionTokens(input ? input.value : '');
+      const options = App.uniqueSorted(chipValues.concat(pending));
+      if (!column) return null;
+      if (!keepEmpty && !options.length) return null;
+      return {
+        id: `dropdown-${index + 1}`,
+        column,
+        options
+      };
+    }).filter(Boolean);
+  }
+
+  function renderDropdownConfigs() {
+    const host = byId('dropdownConfigs');
+    const configs = App.resolveDropdownConfigs(state.settings);
+    if (!configs.length) {
+      host.innerHTML = '<div class="chip">\u05d0\u05d9\u05df dropdowns \u05de\u05d5\u05d2\u05d3\u05e8\u05d9\u05dd \u05e2\u05d3\u05d9\u05d9\u05df.</div>';
+      return;
+    }
+    host.innerHTML = configs.map((configItem, index) => {
+      return `
+        <div class="dropdown-card" data-index="${index}">
+          <div class="field">
+            <label>\u05e2\u05de\u05d5\u05d3\u05ea \u05d9\u05e2\u05d3</label>
+            <select class="dropdown-column">${renderSingleColumnOptions(configItem.column)}</select>
+          </div>
+          <div class="field">
+            <label>\u05d0\u05e4\u05e9\u05e8\u05d5\u05d9\u05d5\u05ea</label>
+            <div class="dropdown-inline">
+              <input class="dropdown-option-input" placeholder="#\u05d0\u05e4\u05e9\u05e8\u05d5\u05ea \u05d7\u05d3\u05e9\u05d4, #\u05e2\u05d5\u05d3 \u05d0\u05d7\u05ea">
+              <button type="button" class="btn light add-dropdown-option">\u05d4\u05d5\u05e1\u05e3 \u05d0\u05e4\u05e9\u05e8\u05d5\u05ea</button>
+            </div>
+            <div class="chips dropdown-option-chips">${renderDropdownOptionChips(configItem.options)}</div>
+          </div>
+          <button type="button" class="btn light remove-dropdown-config">\u05d4\u05e1\u05e8</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderOpenDates() {
+    byId('openDates').innerHTML = App.normalizeOpenDates(state.settings.openDates).map((dateKey) => {
+      return `<button type="button" class="date-chip" data-date="${dateKey}">${App.escapeHtml(App.formatDateLabel(dateKey))}</button>`;
+    }).join('');
+  }
+
+  function renderMultiSelects() {
+    byId('groupColumns').innerHTML = renderColumnOptions(state.settings.groupColumns);
+    byId('filterColumns').innerHTML = renderColumnOptions(state.settings.filterColumns);
+    byId('editableColumns').innerHTML = renderColumnOptions(state.settings.editableColumns);
+    byId('addRowColumns').innerHTML = renderColumnOptions(state.settings.addRowColumns);
+    byId('phonebookColumns').innerHTML = renderColumnOptions(state.settings.phonebookColumns, state.phonebookCatalog);
+    byId('frozenColumns').innerHTML = renderColumnOptions(state.settings.frozenColumns);
+  }
+
+  function renderSourceSettings() {
+    renderChatRooms();
+    renderDropdownConfigs();
+  }
+
+  function hasSourceDiagnosticsUi() {
+    return !!(byId('sourceDiagnosticsGrid') || byId('sourceDiagnosticsNote') || byId('runDiagnosticsBtn'));
+  }
+
+  function diagnosticsDraftSettings() {
+    return collectDraftSettings();
+  }
+
+  function countNamedHeaders(headers) {
+    return (Array.isArray(headers) ? headers : []).reduce((count, header, index) => {
+      const text = String(header || '').trim();
+      return count + (text && text !== App.indexToColumnLetter(index) ? 1 : 0);
+    }, 0);
+  }
+
+  function buildDiagnosticColumnGroups(kind, settings, headers) {
+    const groups = kind === 'phonebook'
+      ? [
+          {
+            label: 'עמודות ספר טלפונים',
+            columns: App.normalizeColumnList(settings.phonebookColumns, [])
+          }
+        ]
+      : [
+          {
+            label: 'עמודות קבוצה',
+            columns: App.normalizeColumnList(settings.groupColumns, ['A'])
+          },
+          {
+            label: 'עמודות מסננים',
+            columns: App.normalizeColumnList(settings.filterColumns, [])
+          },
+          {
+            label: 'עמודות עריכה',
+            columns: App.normalizeColumnList(settings.editableColumns, [])
+          },
+          {
+            label: 'עמודות הוספה',
+            columns: App.normalizeColumnList(settings.addRowColumns, [])
+          },
+          {
+            label: 'עמודות קפואות',
+            columns: App.normalizeColumnList(settings.frozenColumns, [])
+          }
+        ];
+    return groups
+      .map((group) => {
+        const fields = (Array.isArray(group.columns) ? group.columns : []).map((letter) => {
+          const index = App.columnLetterToIndex(letter);
+          const header = index >= 0 ? String(headers[index] || '').trim() : '';
+          return {
+            letter,
+            header: header || letter,
+            unnamed: !header || header === letter
+          };
+        });
+        return {
+          label: group.label,
+          fields
+        };
+      })
+      .filter((group) => group.fields.length);
+  }
+
+  async function loadWorkbookDiagnosticState(url) {
+    const safeUrl = String(url || '').trim();
+    if (!safeUrl) {
+      return {
+        url: '',
+        workbookInfo: null,
+        error: null
+      };
+    }
+    try {
+      return {
+        url: safeUrl,
+        workbookInfo: await App.loadWorkbookFromSharePoint(safeUrl),
+        error: null
+      };
+    } catch (error) {
+      return {
+        url: safeUrl,
+        workbookInfo: null,
+        error
+      };
+    }
+  }
+
+  function buildWorkbookDiagnosticResult(kind, settings, loadState, options) {
+    const config = App.getStaticConfig();
+    const label = kind === 'phonebook' ? 'ספר טלפונים' : 'קובץ נוכחות';
+    const requiredSheets = kind === 'phonebook'
+      ? [config.workbook.mainSheet]
+      : [config.workbook.mainSheet, config.workbook.dataSheet].filter(Boolean);
+    const sharedWithAttendance = !!(options && options.sharedWithAttendance);
+    const safeUrl = String(loadState && loadState.url ? loadState.url : '').trim();
+    if (!safeUrl) {
+      return {
+        kind,
+        label,
+        status: 'warn',
+        message: 'לא הוגדר קישור לקובץ הזה.',
+        url: '',
+        fileName: '',
+        requiredSheets,
+        missingSheets: requiredSheets.slice(),
+        sheetNames: [],
+        headerPreview: [],
+        columnGroups: [],
+        dataRows: 0,
+        namedHeaders: 0,
+        sharedWithAttendance
+      };
+    }
+    if (loadState && loadState.error) {
+      return {
+        kind,
+        label,
+        status: 'err',
+        message: `לא ניתן לטעון את הקובץ. ${String(loadState.error && loadState.error.message ? loadState.error.message : loadState.error)}`,
+        url: safeUrl,
+        fileName: '',
+        requiredSheets,
+        missingSheets: requiredSheets.slice(),
+        sheetNames: [],
+        headerPreview: [],
+        columnGroups: [],
+        dataRows: 0,
+        namedHeaders: 0,
+        sharedWithAttendance
+      };
+    }
+    const workbookInfo = loadState && loadState.workbookInfo ? loadState.workbookInfo : null;
+    const workbook = workbookInfo && workbookInfo.workbook ? workbookInfo.workbook : null;
+    const sheetNames = workbook && Array.isArray(workbook.SheetNames) ? workbook.SheetNames.slice() : [];
+    const hasMainSheet = !!(config.workbook.mainSheet && sheetNames.includes(config.workbook.mainSheet));
+    const matrix = hasMainSheet ? App.getSheetMatrix(workbook, config.workbook.mainSheet, config.workbook.columnCount) : [];
+    const headers = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+    const rows = buildAdminWorkbookRows(matrix, config.workbook.columnCount);
+    const missingSheets = requiredSheets.filter((sheetName) => !sheetNames.includes(sheetName));
+    const columnGroups = buildDiagnosticColumnGroups(kind, settings, headers);
+    const unnamedColumns = columnGroups.reduce((count, group) => {
+      return count + group.fields.filter((field) => field.unnamed).length;
+    }, 0);
+    const messages = [];
+    let status = 'ok';
+    if (missingSheets.length) {
+      status = 'warn';
+      messages.push(`חסרים גיליונות: ${missingSheets.join(', ')}`);
+    }
+    if (!hasMainSheet) {
+      status = 'warn';
+      messages.push(`הגיליון ${config.workbook.mainSheet} לא נמצא.`);
+    } else if (!rows.length) {
+      status = 'warn';
+      messages.push(`הגיליון ${config.workbook.mainSheet} נטען אבל אין בו שורות נתונים.`);
+    }
+    if (unnamedColumns) {
+      status = 'warn';
+      messages.push(`${App.formatNumber(unnamedColumns)} עמודות מוגדרות עדיין ללא כותרת.`);
+    }
+    if (!messages.length) {
+      messages.push(sharedWithAttendance ? 'הקובץ תקין ומשותף גם למקור הנוכחות.' : 'הקובץ נטען בהצלחה והמבנה נראה תקין.');
+    }
+    return {
+      kind,
+      label,
+      status,
+      message: messages.join(' '),
+      url: safeUrl,
+      fileName: String(workbookInfo && workbookInfo.fileName ? workbookInfo.fileName : ''),
+      requiredSheets,
+      missingSheets,
+      sheetNames,
+      headerPreview: headers.slice(0, 8).map((header, index) => ({
+        letter: App.indexToColumnLetter(index),
+        header: String(header || '').trim() || App.indexToColumnLetter(index)
+      })),
+      columnGroups,
+      dataRows: rows.length,
+      namedHeaders: countNamedHeaders(headers),
+      sharedWithAttendance
+    };
+  }
+
+  function renderWorkbookDiagnosticCard(result, fallbackKind) {
+    const kind = String(fallbackKind || result && result.kind || 'attendance');
+    const label = result && result.label
+      ? result.label
+      : (kind === 'phonebook' ? 'ספר טלפונים' : 'קובץ נוכחות');
+    const stateName = result && result.status ? String(result.status) : (state.diagnosticsBusy ? 'loading' : 'warn');
+    const badgeLabels = {
+      ok: 'תקין',
+      warn: 'לבדוק',
+      err: 'שגיאה',
+      loading: 'טוען'
+    };
+    if (!result) {
+      return `
+        <article class="diag-card" data-state="${state.diagnosticsBusy ? 'loading' : 'warn'}">
+          <div class="diag-head">
+            <div>
+              <strong>${App.escapeHtml(label)}</strong>
+              <p>${state.diagnosticsBusy ? 'טוען את הקובץ ואת הכותרות...' : 'לחצו על "רענן בדיקה" כדי לבדוק את הקישור הזה.'}</p>
+            </div>
+            <span class="diag-badge" data-state="${state.diagnosticsBusy ? 'loading' : 'warn'}">${badgeLabels[state.diagnosticsBusy ? 'loading' : 'warn']}</span>
+          </div>
+        </article>
+      `;
+    }
+    const requiredSheetsHtml = result.requiredSheets.length
+      ? result.requiredSheets.map((sheetName) => {
+          const chipClass = result.missingSheets.includes(sheetName) ? 'diag-chip is-warn' : 'diag-chip is-ok';
+          return `<span class="${chipClass}">${App.escapeHtml(sheetName)}</span>`;
+        }).join('')
+      : '<span class="diag-empty">אין גיליונות חובה להגדרה הזו.</span>';
+    const detectedSheetsHtml = result.sheetNames.length
+      ? result.sheetNames.map((sheetName) => `<span class="diag-chip">${App.escapeHtml(sheetName)}</span>`).join('')
+      : '<span class="diag-empty">לא זוהו גיליונות בקובץ.</span>';
+    const columnGroupsHtml = result.columnGroups.length
+      ? result.columnGroups.map((group) => {
+          const fieldsHtml = group.fields.map((field) => {
+            const suffix = field.unnamed ? ' | ללא כותרת' : '';
+            return `<span class="diag-chip ${field.unnamed ? 'is-warn' : 'is-ok'}">${App.escapeHtml(field.letter)} | ${App.escapeHtml(field.header)}${App.escapeHtml(suffix)}</span>`;
+          }).join('');
+          return `
+            <div class="diag-section">
+              <h4>${App.escapeHtml(group.label)}</h4>
+              <div class="diag-chip-list">${fieldsHtml}</div>
+            </div>
+          `;
+        }).join('')
+      : '<div class="diag-empty">אין כרגע עמודות מוגדרות לבדיקה באזור הזה.</div>';
+    const previewHtml = result.headerPreview.length
+      ? result.headerPreview.map((item) => `
+          <div class="diag-preview-item">
+            <span>${App.escapeHtml(item.letter)}</span>
+            <strong>${App.escapeHtml(item.header)}</strong>
+          </div>
+        `).join('')
+      : '<div class="diag-empty">לא נמצאה שורת כותרות להצגה.</div>';
+    const sharedNote = result.sharedWithAttendance
+      ? '<p class="diag-url">מקור זהה לקובץ הנוכחות הראשי.</p>'
+      : '';
+    return `
+      <article class="diag-card" data-state="${App.escapeHtml(stateName)}">
+        <div class="diag-head">
+          <div>
+            <strong>${App.escapeHtml(label)}</strong>
+            <p>${App.escapeHtml(result.message)}</p>
+          </div>
+          <span class="diag-badge" data-state="${App.escapeHtml(stateName)}">${App.escapeHtml(badgeLabels[stateName] || badgeLabels.warn)}</span>
+        </div>
+        <p class="diag-url">${App.escapeHtml(result.fileName || 'ללא שם קובץ')} | ${App.escapeHtml(result.url)}</p>
+        ${sharedNote}
+        <div class="diag-kpis">
+          <div class="diag-kpi">
+            <strong>${App.formatNumber(result.dataRows)}</strong>
+            <span>שורות נתונים</span>
+          </div>
+          <div class="diag-kpi">
+            <strong>${App.formatNumber(result.namedHeaders)}</strong>
+            <span>כותרות מזוהות</span>
+          </div>
+          <div class="diag-kpi">
+            <strong>${App.formatNumber(result.sheetNames.length)}</strong>
+            <span>גיליונות</span>
+          </div>
+        </div>
+        <div class="diag-section">
+          <h4>גיליונות חובה</h4>
+          <div class="diag-chip-list">${requiredSheetsHtml}</div>
+        </div>
+        <div class="diag-section">
+          <h4>גיליונות שזוהו</h4>
+          <div class="diag-chip-list">${detectedSheetsHtml}</div>
+        </div>
+        ${columnGroupsHtml}
+        <div class="diag-section">
+          <h4>תצוגת כותרות</h4>
+          <div class="diag-preview">${previewHtml}</div>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderSourceDiagnostics() {
+    if (!hasSourceDiagnosticsUi()) return;
+    const note = byId('sourceDiagnosticsNote');
+    const grid = byId('sourceDiagnosticsGrid');
+    const button = byId('runDiagnosticsBtn');
+    if (button instanceof HTMLButtonElement) button.disabled = state.diagnosticsBusy;
+    if (!note || !grid) return;
+    note.textContent = '';
+    grid.innerHTML = [
+      renderWorkbookDiagnosticCard(state.diagnostics.attendance, 'attendance'),
+      renderWorkbookDiagnosticCard(state.diagnostics.phonebook, 'phonebook')
+    ].join('');
+  }
+
+  async function runSourceDiagnostics() {
+    if (!hasSourceDiagnosticsUi()) return;
+    const runId = ++state.diagnosticsRunId;
+    state.diagnosticsBusy = true;
+    renderSourceDiagnostics();
+    try {
+      const settings = diagnosticsDraftSettings();
+      const attendanceUrl = App.resolveWorkbookUrl(settings);
+      const phonebookUrl = App.resolvePhonebookWorkbookUrl(settings);
+      const normalizedAttendance = String(App.normalizeRemoteExcelUrl(attendanceUrl) || attendanceUrl || '').trim();
+      const normalizedPhonebook = String(App.normalizeRemoteExcelUrl(phonebookUrl) || phonebookUrl || '').trim();
+      const sharedSource = !!normalizedAttendance && normalizedAttendance === normalizedPhonebook;
+      const attendanceLoad = await loadWorkbookDiagnosticState(attendanceUrl);
+      const phonebookLoad = sharedSource
+        ? attendanceLoad
+        : await loadWorkbookDiagnosticState(phonebookUrl);
+      if (runId !== state.diagnosticsRunId) return;
+      state.diagnostics = {
+        attendance: buildWorkbookDiagnosticResult('attendance', settings, attendanceLoad),
+        phonebook: buildWorkbookDiagnosticResult('phonebook', settings, phonebookLoad, { sharedWithAttendance: sharedSource })
+      };
+      state.lastDiagnosticsAt = new Date();
+    } catch (error) {
+      if (runId !== state.diagnosticsRunId) return;
+      state.diagnostics = {
+        attendance: {
+          kind: 'attendance',
+          label: 'קובץ נוכחות',
+          status: 'err',
+          message: String(error && error.message ? error.message : error),
+          url: '',
+          fileName: '',
+          requiredSheets: [],
+          missingSheets: [],
+          sheetNames: [],
+          headerPreview: [],
+          columnGroups: [],
+          dataRows: 0,
+          namedHeaders: 0,
+          sharedWithAttendance: false
+        },
+        phonebook: state.diagnostics.phonebook
+      };
+      state.lastDiagnosticsAt = new Date();
+    } finally {
+      if (runId === state.diagnosticsRunId) {
+        state.diagnosticsBusy = false;
+        renderSourceDiagnostics();
+      }
+    }
+  }
+
+  function scheduleSourceDiagnostics(immediate) {
+    if (!state.unlocked || !hasSourceDiagnosticsUi()) return;
+    if (state.diagnosticsTimer) window.clearTimeout(state.diagnosticsTimer);
+    if (immediate) {
+      state.diagnosticsTimer = 0;
+      runSourceDiagnostics().catch((error) => {
+        setStatus(error && error.message ? error.message : 'שגיאה בבדיקת מקורות הנתונים.', 'err');
+      });
+      return;
+    }
+    state.diagnosticsTimer = window.setTimeout(() => {
+      state.diagnosticsTimer = 0;
+      runSourceDiagnostics().catch((error) => {
+        setStatus(error && error.message ? error.message : 'שגיאה בבדיקת מקורות הנתונים.', 'err');
+      });
+    }, 220);
+  }
+
+  function currentAdminGroupColumns() {
+    const selected = state.unlocked && byId('groupColumns') ? selectedValues(byId('groupColumns')) : [];
+    if (selected.length) return selected;
+    return Array.isArray(state.settings.groupColumns) && state.settings.groupColumns.length
+      ? state.settings.groupColumns.slice()
+      : ['A'];
+  }
+
+  function buildAdminGroupLabel(groupValues, groupColumns) {
+    return (Array.isArray(groupColumns) ? groupColumns : [])
+      .map((letter) => String(groupValues && groupValues[letter] ? groupValues[letter] : '').trim())
+      .filter(Boolean)
+      .join(' | ');
+  }
+
+  function buildAdminGroupOptions() {
+    const groupColumns = currentAdminGroupColumns();
+    const seen = new Map();
+    state.groupSelectionRows.forEach((cells) => {
+      const composite = App.buildCompositeValue(cells, groupColumns, ' | ');
+      if (!composite.text) return;
+      const values = {};
+      groupColumns.forEach((letter, index) => {
+        const text = String(composite.parts[index] || '').trim();
+        if (text) values[letter] = text;
+      });
+      if (!Object.keys(values).length) return;
+      const key = App.buildGroupSelectionKey(values, groupColumns);
+      if (seen.has(key)) return;
+      seen.set(key, {
+        key,
+        label: buildAdminGroupLabel(values, groupColumns),
+        values
+      });
+    });
+    return Array.from(seen.values()).sort((left, right) => String(left.label || '').localeCompare(String(right.label || ''), 'he', { numeric: true, sensitivity: 'base' }));
+  }
+
+  function buildAdminGroupOptionMap() {
+    return new Map(buildAdminGroupOptions().map((option) => [option.key, option]));
+  }
+
+  function resolveAdminGroupCategoriesDraft(list, groupColumns) {
+    const columns = App.normalizeColumnList(groupColumns, []);
+    const keyColumns = columns.length ? columns : ['A'];
+    const source = Array.isArray(list) ? list : [];
+    return source
+      .map((item, index) => {
+        const explicitId = String(item && item.id ? item.id : '').trim();
+        const selectionsSource = Array.isArray(item && item.selections) ? item.selections : [];
+        const seen = new Map();
+        selectionsSource.forEach((selection) => {
+          const normalized = App.normalizeGroupSelectionValues(selection, keyColumns);
+          if (!Object.keys(normalized).length) return;
+          seen.set(App.buildGroupSelectionKey(normalized, keyColumns), normalized);
+        });
+        const label = String(item && item.label ? item.label : '').trim();
+        if (!label && !seen.size && !explicitId) return null;
+        return {
+          id: explicitId || `group-category-${index + 1}`,
+          label,
+          selections: Array.from(seen.values())
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function readGroupCategoriesFromDom(keepEmpty) {
+    const groupColumns = currentAdminGroupColumns();
+    const optionMap = buildAdminGroupOptionMap();
+    const next = Array.from(document.querySelectorAll('.group-category-card')).map((card, index) => {
+      const label = String(card.querySelector('.group-category-label') && card.querySelector('.group-category-label').value || '').trim();
+      const select = card.querySelector('.group-category-members');
+      const selections = select instanceof HTMLSelectElement
+        ? Array.from(select.selectedOptions)
+            .map((option) => optionMap.get(String(option.value || '').trim()))
+            .filter(Boolean)
+            .map((option) => ({ ...option.values }))
+        : [];
+      if (!keepEmpty && (!label || !selections.length)) return null;
+      return {
+        id: String(card.dataset.categoryId || `group-category-${index + 1}`),
+        label,
+        selections
+      };
+    }).filter(Boolean);
+    const draft = resolveAdminGroupCategoriesDraft(next, groupColumns);
+    if (keepEmpty) return draft;
+    return App.resolveGroupCategories({ groupCategories: draft, groupColumns }, groupColumns);
+  }
+
+  function renderGroupCategories() {
+    const host = byId('groupCategories');
+    const status = byId('groupCategoryStatus');
+    if (!host || !status) return;
+    const groupColumns = currentAdminGroupColumns();
+    const options = buildAdminGroupOptions();
+    const categories = resolveAdminGroupCategoriesDraft(state.settings.groupCategories, groupColumns);
+    const hasGroupColumns = !!groupColumns.length;
+    status.textContent = hasGroupColumns && options.length
+      ? `${App.formatNumber(options.length)} יחידות זמינות.`
+      : '';
+    if (!categories.length) {
+      host.innerHTML = '<div class="chip">אין קטגוריות.</div>';
+      return;
+    }
+    host.innerHTML = categories.map((category, index) => {
+      const selectedKeys = (Array.isArray(category.selections) ? category.selections : [])
+        .map((selection) => App.buildGroupSelectionKey(selection, groupColumns))
+        .filter((key) => options.some((option) => option.key === key));
+      const selectionDisabled = !hasGroupColumns || !options.length;
+      return `
+        <div class="group-category-card" data-index="${index}" data-category-id="${App.escapeHtml(category.id)}">
+          <div class="field">
+            <label>שם הקטגוריה</label>
+            <input class="group-category-label" value="${App.escapeHtml(category.label)}" placeholder="למשל: גדוד צפוני">
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label>יחידות כלולות</label>
+              <button type="button" class="mini-btn clear-group-category-members"${selectionDisabled ? ' disabled' : ''}>נקה בחירה</button>
+            </div>
+            <select class="group-category-members" multiple size="8"${selectionDisabled ? ' disabled' : ''}>${options.map((option) => `<option value="${App.escapeHtml(option.key)}"${selectedKeys.includes(option.key) ? ' selected' : ''}>${App.escapeHtml(option.label)}</option>`).join('')}</select>
+          </div>
+          <button type="button" class="btn light remove-group-category">הסר</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function readChatRoomsFromDom(keepEmpty) {
+    const next = Array.from(document.querySelectorAll('.chat-room-config-card')).map((card, index) => {
+      const label = String(card.querySelector('.chat-room-label') && card.querySelector('.chat-room-label').value || '').trim();
+      const description = String(card.querySelector('.chat-room-description') && card.querySelector('.chat-room-description').value || '').trim();
+      if (!keepEmpty && !label) return null;
+      return {
+        id: String(card.dataset.roomId || `chat-room-${index + 1}`).trim() || `chat-room-${index + 1}`,
+        label,
+        description
+      };
+    }).filter(Boolean);
+    if (keepEmpty) return next;
+    return App.resolveCustomChatRooms({ customChatRooms: next });
+  }
+
+  function renderChatRooms() {
+    const host = byId('chatRooms');
+    const status = byId('chatRoomStatus');
+    if (!host || !status) return;
+    const rooms = Array.isArray(state.settings.customChatRooms) ? state.settings.customChatRooms : [];
+    status.textContent = '';
+    if (!rooms.length) {
+      host.innerHTML = '<div class="chip">אין חדרים מותאמים.</div>';
+      return;
+    }
+    host.innerHTML = rooms.map((room, index) => `
+      <div class="group-category-card chat-room-config-card" data-index="${index}" data-room-id="${App.escapeHtml(room.id)}">
+        <div class="field">
+          <label>שם החדר</label>
+          <input class="chat-room-label" value="${App.escapeHtml(room.label)}" placeholder="למשל: הנהלה, משמרת לילה">
+        </div>
+        <div class="field">
+          <label>תיאור קצר</label>
+          <input class="chat-room-description" value="${App.escapeHtml(room.description || '')}" placeholder="למה החדר מיועד ומי אמור להשתמש בו">
+        </div>
+        <button type="button" class="btn light remove-chat-room">הסר</button>
+      </div>
+    `).join('');
+  }
+
+  function persistChatRoomDraft() {
+    state.settings.customChatRooms = readChatRoomsFromDom(true);
+  }
+
+  function addChatRoom() {
+    const current = readChatRoomsFromDom(true);
+    current.unshift({
+      id: `chat-room-${Date.now()}`,
+      label: 'חדר חדש',
+      description: ''
+    });
+    state.settings.customChatRooms = current;
+    renderChatRooms();
+    renderAdminChrome();
+    const latestCard = document.querySelector('.chat-room-config-card');
+    const latestInput = latestCard && latestCard.querySelector('.chat-room-label');
+    if (latestInput instanceof HTMLInputElement) {
+      latestInput.focus();
+      latestInput.select();
+    }
+    setStatus('נוסף חדר צ׳אט חדש. אפשר לשנות לו שם ותיאור לפני השמירה.', 'ok');
+  }
+
+  function renderCrossTabs() {
+    const host = byId('crossTabs');
+    host.innerHTML = state.settings.crossTabs.map((preset, index) => {
+      const chartType = String(preset.chartType || 'stacked');
+      const dataScope = String(preset.dataScope || 'scoped');
+      const palette = String(preset.palette || 'aurora');
+      const layoutSpan = Number(preset.layoutSpan || 1) >= 2 ? 2 : 1;
+      const layoutSpanTablet = Number(preset.layoutSpanTablet || layoutSpan || 1) >= 2 ? 2 : 1;
+      const layoutSpanMobile = Number(preset.layoutSpanMobile || 1) >= 2 ? 2 : 1;
+      const maxItems = Math.min(ADMIN_DASHBOARD_MAX_ITEMS_LIMIT, Math.max(3, Number(preset.maxItems || 8) || 8));
+      const aggregation = String(preset.aggregation || 'count');
+      const legendPosition = String(preset.legendPosition || 'top');
+      const customColors = Array.isArray(preset.customColors) ? preset.customColors.join(', ') : '';
+      const rowPrimary = firstSelectedColumn(preset.rowColumns, state.settings.groupColumns[0] || state.catalog[0] && state.catalog[0].letter || 'A');
+      const colPrimary = firstSelectedColumn(preset.colColumns, '');
+      const advancedOpen = !!(
+        (Array.isArray(preset.rowColumns) && preset.rowColumns.length > 1)
+        || (Array.isArray(preset.colColumns) && preset.colColumns.length > 1)
+        || dataScope !== 'scoped'
+        || palette !== 'aurora'
+        || legendPosition !== 'top'
+        || layoutSpan !== 1
+        || layoutSpanTablet !== 1
+        || layoutSpanMobile !== 1
+        || maxItems !== 8
+        || customColors
+        || Number(preset.minHeight || 300) !== 300
+        || Number(preset.padding || 12) !== 12
+        || Number(preset.borderWidth || 2) !== 2
+        || Number(preset.borderRadius || 10) !== 10
+        || Number(preset.animationMs || 700) !== 700
+        || Number(preset.scaleStep || 0) !== 0
+        || preset.showToUsers === false
+        || preset.showTotals === false
+        || preset.showLegend === false
+        || preset.showValues === false
+        || preset.showLabels === false
+        || preset.showGrid === false
+        || preset.animate === false
+      );
+      const summaryText = buildPresetSummaryText({ ...preset, rowColumns: rowPrimary ? [rowPrimary] : [], colColumns: colPrimary ? [colPrimary] : [] });
+      const metaText = buildPresetMetaText({ ...preset, rowColumns: rowPrimary ? [rowPrimary] : [], colColumns: colPrimary ? [colPrimary] : [] });
+      return `
+        <div class="preset-card dashboard-card" data-index="${index}" data-chart-type="${App.escapeHtml(chartType)}">
+          <div class="preset-card-head span-all">
+            <div class="preset-card-meta">
+              <div class="preset-card-kicker">\u05d2\u05e8\u05e3 ${index + 1}</div>
+              <div class="preset-card-summary">${App.escapeHtml(summaryText)}</div>
+              <div class="preset-card-sub">${App.escapeHtml(metaText)}</div>
+            </div>
+            <button type="button" class="btn light remove-preset">\u05d4\u05e1\u05e8 \u05d2\u05e8\u05e3</button>
+          </div>
+          <div class="preset-quick-grid span-all">
+            <div class="field">
+              <label>\u05db\u05d5\u05ea\u05e8\u05ea</label>
+              <input class="preset-label" value="${App.escapeHtml(preset.label)}" placeholder="\u05dc\u05de\u05e9\u05dc: \u05d9\u05d7\u05d9\u05d3\u05d4 \u05de\u05d5\u05dc \u05e1\u05d8\u05d8\u05d5\u05e1">
+            </div>
+            <div class="field">
+              <label>\u05e1\u05d5\u05d2 \u05d2\u05e8\u05e3</label>
+              <select class="preset-chart-type">
+                <option value="stacked"${chartType === 'stacked' ? ' selected' : ''}>Stacked</option>
+                <option value="bar"${chartType === 'bar' ? ' selected' : ''}>Bar</option>
+                <option value="line"${chartType === 'line' ? ' selected' : ''}>Line</option>
+                <option value="area"${chartType === 'area' ? ' selected' : ''}>Area</option>
+                <option value="pie"${chartType === 'pie' ? ' selected' : ''}>Pie</option>
+                <option value="donut"${chartType === 'donut' ? ' selected' : ''}>Donut</option>
+                <option value="radar"${chartType === 'radar' ? ' selected' : ''}>Radar</option>
+                <option value="radial"${chartType === 'radial' ? ' selected' : ''}>Radial</option>
+                <option value="polar"${chartType === 'polar' ? ' selected' : ''}>Polar</option>
+                <option value="heatmap"${chartType === 'heatmap' ? ' selected' : ''}>Heatmap</option>
+                <option value="progress"${chartType === 'progress' ? ' selected' : ''}>Progress</option>
+                <option value="table"${chartType === 'table' ? ' selected' : ''}>Cross table</option>
+                <option value="metric"${chartType === 'metric' ? ' selected' : ''}>Metric</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>\u05e9\u05d3\u05d4 \u05e8\u05d0\u05e9\u05d9</label>
+              <select class="preset-row-primary">${renderDashboardSingleFieldOptions(rowPrimary, '', false)}</select>
+              <p class="preset-note">\u05e2\u05e8\u05db\u05d9 \u05d4\u05e9\u05d3\u05d4 \u05d4\u05d6\u05d4 \u05d9\u05d4\u05d9\u05d5 \u05d4\u05e6\u05d9\u05e8 \u05d0\u05d5 \u05d4\u05e7\u05d1\u05d5\u05e6\u05d5\u05ea \u05d1\u05d2\u05e8\u05e3.</p>
+            </div>
+            <div class="field">
+              <label>\u05dc\u05de\u05d5\u05dc \u05d0\u05d9\u05d6\u05d4 \u05e9\u05d3\u05d4 \u05dc\u05d7\u05e6\u05d5\u05ea?</label>
+              <select class="preset-col-primary">${renderDashboardSingleFieldOptions(colPrimary, '\u05dc\u05dc\u05d0 \u05e4\u05d9\u05dc\u05d5\u05d7', true)}</select>
+              <p class="preset-note">\u05d0\u05dd \u05dc\u05d0 \u05d1\u05d5\u05d7\u05e8\u05d9\u05dd \u05e9\u05d3\u05d4, \u05d9\u05d5\u05e6\u05d2 \u05e2\u05e8\u05da \u05d0\u05d7\u05d3 \u05dc\u05db\u05dc \u05e7\u05d1\u05d5\u05e6\u05d4.</p>
+            </div>
+            <div class="field">
+              <label>\u05d7\u05d9\u05e9\u05d5\u05d1</label>
+              <select class="preset-aggregation">
+                <option value="count"${aggregation === 'count' ? ' selected' : ''}>\u05e1\u05e4\u05d9\u05e8\u05ea \u05e8\u05e9\u05d5\u05de\u05d5\u05ea</option>
+                <option value="sum"${aggregation === 'sum' ? ' selected' : ''}>\u05e1\u05db\u05d5\u05dd</option>
+                <option value="avg"${aggregation === 'avg' ? ' selected' : ''}>\u05de\u05de\u05d5\u05e6\u05e2</option>
+                <option value="min"${aggregation === 'min' ? ' selected' : ''}>\u05de\u05d9\u05e0\u05d9\u05de\u05d5\u05dd</option>
+                <option value="max"${aggregation === 'max' ? ' selected' : ''}>\u05de\u05e7\u05e1\u05d9\u05de\u05d5\u05dd</option>
+              </select>
+            </div>
+            <div class="field preset-value-field">
+              <label>\u05e2\u05de\u05d5\u05d3\u05ea \u05e2\u05e8\u05da</label>
+              <select class="preset-value-column">${renderSingleColumnOptionsWithBlank(preset.valueColumn, '\u05d1\u05e1\u05e4\u05d9\u05e8\u05d4 \u05dc\u05d0 \u05e6\u05e8\u05d9\u05da')}</select>
+              <p class="preset-note"></p>
+            </div>
+          </div>
+          <details class="preset-advanced"${advancedOpen ? ' open' : ''}>
+            <summary>\u05e9\u05d3\u05d5\u05ea \u05de\u05e9\u05d5\u05dc\u05d1\u05d9\u05dd \u05d5\u05d4\u05d2\u05d3\u05e8\u05d5\u05ea \u05de\u05ea\u05e7\u05d3\u05de\u05d5\u05ea</summary>
+            <div class="preset-advanced-grid">
+              <div class="field">
+                <label>\u05d8\u05d5\u05d5\u05d7 \u05e0\u05ea\u05d5\u05e0\u05d9\u05dd</label>
+                <select class="preset-scope">
+                  <option value="scoped"${dataScope === 'scoped' ? ' selected' : ''}>\u05d4\u05e7\u05d1\u05d5\u05e6\u05d4 \u05d4\u05e0\u05d5\u05db\u05d7\u05d9\u05ea</option>
+                  <option value="visible"${dataScope === 'visible' ? ' selected' : ''}>\u05de\u05d4 \u05e9\u05de\u05d5\u05e6\u05d2 \u05d1\u05d8\u05d1\u05dc\u05d4</option>
+                  <option value="all"${dataScope === 'all' ? ' selected' : ''}>\u05db\u05dc \u05d4\u05e0\u05ea\u05d5\u05e0\u05d9\u05dd</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>\u05e4\u05dc\u05d8\u05ea \u05e6\u05d1\u05e2\u05d9\u05dd</label>
+                <select class="preset-palette">
+                  <option value="aurora"${palette === 'aurora' ? ' selected' : ''}>Aurora</option>
+                  <option value="ocean"${palette === 'ocean' ? ' selected' : ''}>Ocean</option>
+                  <option value="citrus"${palette === 'citrus' ? ' selected' : ''}>Citrus</option>
+                  <option value="sunset"${palette === 'sunset' ? ' selected' : ''}>Sunset</option>
+                  <option value="forest"${palette === 'forest' ? ' selected' : ''}>Forest</option>
+                  <option value="slate"${palette === 'slate' ? ' selected' : ''}>Slate</option>
+                  <option value="berry"${palette === 'berry' ? ' selected' : ''}>Berry</option>
+                  <option value="rose"${palette === 'rose' ? ' selected' : ''}>Rose</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>\u05de\u05d9\u05e7\u05d5\u05dd \u05de\u05e7\u05e8\u05d0</label>
+                <select class="preset-legend-position">
+                  <option value="top"${legendPosition === 'top' ? ' selected' : ''}>\u05dc\u05de\u05e2\u05dc\u05d4</option>
+                  <option value="right"${legendPosition === 'right' ? ' selected' : ''}>\u05d9\u05de\u05d9\u05df</option>
+                  <option value="bottom"${legendPosition === 'bottom' ? ' selected' : ''}>\u05dc\u05de\u05d8\u05d4</option>
+                  <option value="left"${legendPosition === 'left' ? ' selected' : ''}>\u05e9\u05de\u05d0\u05dc</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>\u05db\u05de\u05d5\u05ea \u05e4\u05e8\u05d9\u05d8\u05d9\u05dd</label>
+                <input class="preset-max-items" type="number" min="3" max="${ADMIN_DASHBOARD_MAX_ITEMS_LIMIT}" value="${maxItems}">
+              </div>
+              <div class="field">
+                <label>\u05e9\u05d3\u05d5\u05ea \u05e8\u05d0\u05e9\u05d9\u05d9\u05dd \u05de\u05e9\u05d5\u05dc\u05d1\u05d9\u05dd</label>
+                <select class="preset-rows" multiple size="6">${renderDashboardFieldOptions(preset.rowColumns)}</select>
+                <p class="preset-note">\u05dc\u05d0\u05d9\u05d7\u05d5\u05d3 \u05db\u05de\u05d4 \u05e9\u05d3\u05d5\u05ea \u05d1\u05e6\u05d9\u05e8 \u05d0\u05d7\u05d3.</p>
+              </div>
+              <div class="field">
+                <div class="field-head">
+                  <label>\u05e9\u05d3\u05d5\u05ea \u05e4\u05d9\u05dc\u05d5\u05d7 \u05de\u05e9\u05d5\u05dc\u05d1\u05d9\u05dd</label>
+                  <button type="button" class="mini-btn clear-preset-select" data-target-class="preset-cols">\u05e0\u05e7\u05d4 \u05e4\u05d9\u05dc\u05d5\u05d7</button>
+                </div>
+                <select class="preset-cols" multiple size="6">${renderDashboardFieldOptions(preset.colColumns)}</select>
+                <p class="preset-note">\u05dc\u05d0 \u05d7\u05d9\u05d9\u05d1\u05d9. \u05de\u05e9\u05d9\u05e8\u05d9\u05dd \u05e8\u05d9\u05e7 \u05dc\u05e7\u05d1\u05dc\u05ea \u05e2\u05e8\u05da \u05d0\u05d7\u05d3 \u05dc\u05db\u05dc \u05e7\u05d1\u05d5\u05e6\u05d4.</p>
+              </div>
+              <div class="field">
+                <label>\u05e8\u05d5\u05d7\u05d1 \u05d1\u05d3\u05e1\u05e7\u05d8\u05d5\u05e4</label>
+                <select class="preset-span">
+                  <option value="1"${layoutSpan === 1 ? ' selected' : ''}>\u05e8\u05d2\u05d9\u05dc</option>
+                  <option value="2"${layoutSpan === 2 ? ' selected' : ''}>\u05e8\u05d7\u05d1</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>\u05e8\u05d5\u05d7\u05d1 \u05d1\u05d8\u05d0\u05d1\u05dc\u05d8</label>
+                <select class="preset-span-tablet">
+                  <option value="1"${layoutSpanTablet === 1 ? ' selected' : ''}>\u05e8\u05d2\u05d9\u05dc</option>
+                  <option value="2"${layoutSpanTablet === 2 ? ' selected' : ''}>\u05e8\u05d7\u05d1</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>\u05e8\u05d5\u05d7\u05d1 \u05d1\u05de\u05d5\u05d1\u05d9\u05d9\u05dc</label>
+                <select class="preset-span-mobile">
+                  <option value="1"${layoutSpanMobile === 1 ? ' selected' : ''}>\u05e8\u05d2\u05d9\u05dc</option>
+                  <option value="2"${layoutSpanMobile === 2 ? ' selected' : ''}>\u05e8\u05d7\u05d1</option>
+                </select>
+              </div>
+              <div class="field span-all">
+                <label>\u05e6\u05d1\u05e2\u05d9\u05dd \u05de\u05d5\u05ea\u05d0\u05de\u05d9\u05dd (\u05d0\u05d5\u05e4\u05e6\u05d9\u05d5\u05e0\u05dc\u05d9)</label>
+                <input class="preset-custom-colors" value="${App.escapeHtml(customColors)}" placeholder="#2563eb, #10b981, #f59e0b">
+              </div>
+              <div class="field">
+                <label>\u05d2\u05d5\u05d1\u05d4 \u05de\u05d9\u05e0\u05d9\u05de\u05dc\u05d9</label>
+                <input class="preset-min-height" type="number" min="220" max="520" value="${Number(preset.minHeight || 300)}">
+              </div>
+              <div class="field">
+                <label>Padding</label>
+                <input class="preset-padding" type="number" min="0" max="36" value="${Number(preset.padding || 12)}">
+              </div>
+              <div class="field">
+                <label>Border width</label>
+                <input class="preset-border-width" type="number" min="0" max="8" value="${Number(preset.borderWidth || 2)}">
+              </div>
+              <div class="field">
+                <label>Border radius</label>
+                <input class="preset-border-radius" type="number" min="0" max="28" value="${Number(preset.borderRadius || 10)}">
+              </div>
+              <div class="field">
+                <label>\u05d0\u05e0\u05d9\u05de\u05e6\u05d9\u05d4 (ms)</label>
+                <input class="preset-animation-ms" type="number" min="0" max="5000" value="${Number(preset.animationMs || 700)}">
+              </div>
+              <div class="field">
+                <label>\u05e7\u05e4\u05d9\u05e6\u05ea \u05e1\u05e7\u05d0\u05dc\u05d4</label>
+                <input class="preset-scale-step" type="number" min="0" max="1000000" value="${Number(preset.scaleStep || 0)}" placeholder="0 = \u05d0\u05d5\u05d8\u05d5\u05de\u05d8\u05d9">
+              </div>
+              <div class="span-all chips">
+                <label class="chip-btn"><input class="preset-show-to-users" type="checkbox"${preset.showToUsers !== false ? ' checked' : ''}> \u05d4\u05e6\u05d2 \u05dc\u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd \u05d1\u05de\u05e1\u05da \u05d4\u05e0\u05d5\u05db\u05d7\u05d5\u05ea</label>
+                <label class="chip-btn"><input class="preset-show-totals" type="checkbox"${preset.showTotals !== false ? ' checked' : ''}> \u05d4\u05e6\u05d2 \u05e1\u05db\u05d5\u05de\u05d9 \u05e9\u05d5\u05e8\u05d4/\u05e2\u05de\u05d5\u05d3\u05d4 \u05d1-Cross table \u05d5-Heatmap</label>
+                <label class="chip-btn"><input class="preset-show-legend" type="checkbox"${preset.showLegend !== false ? ' checked' : ''}> \u05d4\u05e6\u05d2 \u05de\u05e7\u05e8\u05d0</label>
+                <label class="chip-btn"><input class="preset-show-values" type="checkbox"${preset.showValues !== false ? ' checked' : ''}> \u05d4\u05e6\u05d2 \u05e2\u05e8\u05db\u05d9\u05dd \u05d1\u05db\u05e8\u05d8\u05d9\u05e1</label>
+                <label class="chip-btn"><input class="preset-show-labels" type="checkbox"${preset.showLabels !== false ? ' checked' : ''}> \u05d4\u05e6\u05d2 \u05de\u05e1\u05e4\u05e8\u05d9\u05dd \u05e2\u05dc \u05d4\u05d2\u05e8\u05e3</label>
+                <label class="chip-btn"><input class="preset-show-grid" type="checkbox"${preset.showGrid !== false ? ' checked' : ''}> \u05d4\u05e6\u05d2 grid</label>
+                <label class="chip-btn"><input class="preset-animate" type="checkbox"${preset.animate !== false ? ' checked' : ''}> \u05d0\u05e0\u05d9\u05de\u05e6\u05d9\u05d4</label>
+              </div>
+            </div>
+          </details>
+        </div>
+      `;
+    }).join('');
+    Array.from(host.querySelectorAll('.preset-card')).forEach((card) => updatePresetCardPresentation(card));
+  }
+
+  function renderForm() {
+    byId('gateHint').textContent = '';
+    const gateCard = byId('gateCard');
+    const sectionNav = byId('adminSectionNav');
+    if (gateCard) gateCard.classList.toggle('hidden', state.unlocked);
+    if (sectionNav) sectionNav.classList.toggle('hidden', !state.unlocked);
+    byId('adminPanel').classList.toggle('hidden', !state.unlocked);
+    renderCatalog();
+    renderSourceSettings();
+    renderOpenDates();
+    renderMultiSelects();
+    renderGroupCategories();
+    renderCrossTabs();
+    renderSourceDiagnostics();
+    renderUnitsBoard();
+    renderAdminRecordModules();
+    renderAdminTabState();
+    renderAdminChrome();
+    ensureAdminRecordModulesLoaded(false);
+  }
+
+  function buildAdminTabDefinitions() {
+    return Object.keys(ADMIN_TAB_META).map((tab) => {
+      const meta = ADMIN_TAB_META[tab] || {};
+      return {
+        tab,
+        label: String(meta.label || tab).trim(),
+        icon: String(meta.icon || '•').trim()
+      };
+    });
+  }
+
+  function renderAdminSectionButtons() {
+    const host = byId('adminSidebarTabs');
+    if (!host) return;
+    const definitions = buildAdminTabDefinitions();
+    if (!definitions.some((item) => item.tab === state.activeTab)) {
+      state.activeTab = definitions.some((item) => item.tab === 'operations')
+        ? 'operations'
+        : (definitions.some((item) => item.tab === 'overview')
+          ? 'overview'
+          : (definitions[0] ? definitions[0].tab : 'operations'));
+    }
+    host.innerHTML = definitions.map((item) => {
+      const active = item.tab === state.activeTab;
+      return `
+        <button type="button" class="qb-nav-link admin-side-tab${active ? ' active' : ''}" data-admin-tab="${App.escapeHtml(item.tab)}" aria-pressed="${active ? 'true' : 'false'}">
+          <i class="${App.escapeHtml(String(ADMIN_TAB_ICON_CLASSES[item.tab] || 'fas fa-circle'))} tab-icon" aria-hidden="true"></i>
+          <span>${App.escapeHtml(item.label)}</span>
+        </button>
+      `;
+    }).join('');
+  }
+
+  function renderAdminTabState() {
+    renderAdminSectionButtons();
+    const active = String(state.activeTab || 'operations');
+    const panel = byId('adminPanel');
+    if (panel instanceof HTMLElement) {
+      panel.dataset.activeTab = active;
+    }
+    document.querySelectorAll('#adminSidebarTabs .admin-side-tab').forEach((button) => {
+      button.classList.toggle('active', String(button.dataset.adminTab || '') === active);
+      button.setAttribute('aria-pressed', String(String(button.dataset.adminTab || '') === active));
+    });
+    document.querySelectorAll('#adminPanel > [data-admin-tab]').forEach((section) => {
+      const tab = String(section.dataset.adminTab || '');
+      section.classList.toggle('hidden', !(tab === 'all' || tab === active));
+    });
+  }
+
+  function setAdminTab(tab) {
+    state.activeTab = String(tab || 'operations');
+    renderAdminTabState();
+    renderAdminChrome();
+  }
+
+  function buildAdminWorkbookRows(matrix, columnCount) {
+    const rows = [];
+    for (let rowIndex = 1; rowIndex < (matrix || []).length; rowIndex += 1) {
+      const source = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const cells = [];
+      for (let colIndex = 0; colIndex < columnCount; colIndex += 1) {
+        cells.push(String(source[colIndex] || ''));
+      }
+      if (!cells.some((cell) => String(cell || '').trim())) continue;
+      rows.push(cells);
+    }
+    return rows;
+  }
+
+  function buildAdminRowsFromListRecords(records, columnCount) {
+    const rows = [];
+    (Array.isArray(records) ? records : []).forEach((record) => {
+      const cells = App.recordToCells(record).slice(0, columnCount);
+      while (cells.length < columnCount) cells.push('');
+      if (!cells.some((cell) => String(cell || '').trim())) return;
+      rows.push(cells);
+    });
+    return rows;
+  }
+
+  async function loadPhonebookCatalog(settings, options) {
+    const config = App.getStaticConfig();
+    const activeSettings = App.normalizeSettings(settings || state.settings);
+    const workbookUrl = App.resolveWorkbookUrl(activeSettings);
+    if (!workbookUrl) {
+      state.phonebookHeaders = state.headers.slice();
+      state.phonebookCatalog = App.buildColumnCatalog(state.phonebookHeaders, config.workbook.columnCount);
+      return;
+    }
+    try {
+      const workbookInfo = await App.loadWorkbookFromSharePoint(workbookUrl);
+      const matrix = App.getSheetMatrix(workbookInfo.workbook, config.workbook.mainSheet, config.workbook.columnCount);
+      state.phonebookHeaders = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+      state.phonebookCatalog = App.buildColumnCatalog(state.phonebookHeaders, config.workbook.columnCount);
+    } catch (error) {
+      state.phonebookHeaders = state.headers.slice();
+      state.phonebookCatalog = App.buildColumnCatalog(state.phonebookHeaders, config.workbook.columnCount);
+      if (!options || !options.silent) {
+        setStatus(`\u05d8\u05e2\u05d9\u05e0\u05ea \u05db\u05d5\u05ea\u05e8\u05d5\u05ea \u05e1\u05e4\u05e8 \u05d4\u05d8\u05dc\u05e4\u05d5\u05e0\u05d9\u05dd \u05e0\u05db\u05e9\u05dc\u05d4. ${error.message}`, 'warn');
+      }
+    }
+  }
+
+  async function loadHeaders() {
+    const config = App.getStaticConfig();
+    if (!App.hasWorkbookSource(state.settings)) {
+      const sourceRecords = await App.loadSourceRecords(config.workbook.columnCount);
+      const fallbackRecords = sourceRecords.length
+        ? []
+        : await App.loadAttendanceRecordsForDates(
+            state.settings.openDates && state.settings.openDates.length ? state.settings.openDates : [App.todayKey()],
+            config.workbook.columnCount
+          );
+      state.sourceRowsOrigin = sourceRecords.length ? 'source' : (fallbackRecords.length ? 'attendance-fallback' : 'source');
+      state.headers = App.resolveSourceHeaders(state.settings, config.workbook.columnCount);
+      state.groupSelectionRows = buildAdminRowsFromListRecords(sourceRecords.length ? sourceRecords : fallbackRecords, config.workbook.columnCount);
+      state.catalog = App.buildColumnCatalog(state.headers, config.workbook.columnCount);
+      await loadPhonebookCatalog(state.settings, { silent: true });
+      return;
+    }
+    try {
+      const workbookInfo = await App.loadWorkbookFromSharePoint(App.resolveWorkbookUrl(state.settings));
+      const matrix = App.getSheetMatrix(workbookInfo.workbook, config.workbook.mainSheet, config.workbook.columnCount);
+      state.sourceRowsOrigin = 'workbook';
+      state.headers = App.buildHeadersFromMatrix(matrix, config.workbook.columnCount);
+      state.groupSelectionRows = buildAdminWorkbookRows(matrix, config.workbook.columnCount);
+    } catch (error) {
+      state.sourceRowsOrigin = 'workbook';
+      state.headers = Array.from({ length: config.workbook.columnCount }, (_, index) => App.indexToColumnLetter(index));
+      state.groupSelectionRows = [];
+      setStatus(`\u05d8\u05e2\u05d9\u05e0\u05ea \u05d4\u05db\u05d5\u05ea\u05e8\u05d5\u05ea \u05de\u05d4\u05e7\u05d5\u05d1\u05e5 \u05e0\u05db\u05e9\u05dc\u05d4, \u05de\u05e9\u05ea\u05de\u05e9 \u05d1\u05db\u05d5\u05ea\u05e8\u05d5\u05ea \u05d1\u05e8\u05d9\u05e8\u05ea \u05de\u05d7\u05d3\u05dc. ${error.message}`, 'warn');
+    }
+    state.catalog = App.buildColumnCatalog(state.headers, config.workbook.columnCount);
+    await loadPhonebookCatalog(state.settings, { silent: true });
+  }
+
+  function readAdminFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error('קריאת קובץ ה-Excel נכשלה.'));
+      reader.onload = () => resolve(reader.result);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function resolveAdminImportSheetName(workbook) {
+    const preferred = String(App.getStaticConfig().workbook.mainSheet || '').trim();
+    if (preferred && Array.isArray(workbook && workbook.SheetNames) && workbook.SheetNames.includes(preferred)) return preferred;
+    return Array.isArray(workbook && workbook.SheetNames) && workbook.SheetNames.length
+      ? String(workbook.SheetNames[0] || '')
+      : '';
+  }
+
+  function buildImportedSourceHeaders(matrix, columnCount) {
+    return Array.from({ length: columnCount }, (_, index) => {
+      return String((matrix[0] && matrix[0][index]) || '').trim() || App.indexToColumnLetter(index);
+    });
+  }
+
+  function buildImportedSourceRecords(matrix, columnCount) {
+    const personIdColumn = App.columnLetterToIndex('C');
+    const unitColumn = App.columnLetterToIndex('A');
+    const rows = [];
+    for (let rowIndex = 1; rowIndex < (matrix || []).length; rowIndex += 1) {
+      const source = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const cells = Array.from({ length: columnCount }, (_, colIndex) => String(source[colIndex] || ''));
+      if (!cells.some((value) => String(value || '').trim())) continue;
+      const excelRow = rowIndex + 1;
+      const personId = String(cells[personIdColumn] || '').trim();
+      rows.push({
+        rowKey: personId ? `${personId}|${excelRow}` : `row|${excelRow}`,
+        excelRow,
+        unitName: String(cells[unitColumn] || '').trim(),
+        cells
+      });
+    }
+    return rows;
+  }
+
+  async function importSourceRecordsFromFile(file) {
+    if (!(file instanceof File)) return;
+    if (state.saving) return;
+    const hadUnsavedChanges = hasUnsavedAdminChanges();
+    if (hadUnsavedChanges && !window.confirm('יש שינויים שלא נשמרו במסך הניהול. הייבוא ימשיך, אבל כדי לרענן את כל בוחרי העמודות נצטרך לטעון מחדש את המסך אחר כך. להמשיך?')) {
+      return;
+    }
+    state.saving = true;
+    renderSaveState();
+    try {
+      if (!state.currentUser.name && !state.currentUser.login && !state.currentUser.email) {
+        state.currentUser = await App.getCurrentUser();
+      }
+      const columnCount = App.getStaticConfig().workbook.columnCount;
+      const importResult = await App.importSourceRecordsFromFile(file, {
+        settings: state.settings,
+        columnCount,
+        currentUser: state.currentUser,
+        isAdminEdit: true
+      });
+      const headers = Array.isArray(importResult.headers) ? importResult.headers : [];
+      const records = Array.isArray(importResult.records) ? importResult.records : [];
+      const replaceResult = importResult.replaceResult || { createdCount: 0, updatedCount: 0, deletedCount: 0 };
+      const settingsResult = importResult.settingsResult || null;
+      const seededDates = Array.isArray(importResult.seededDates) ? importResult.seededDates : [];
+      state.settings = importResult.settings || App.normalizeSettings({ ...state.settings, sourceHeaders: headers });
+      if (!hadUnsavedChanges) {
+        await loadHeaders();
+        renderForm();
+        rememberSavedState();
+      } else {
+        state.sourceRowsOrigin = 'source';
+        state.headers = headers.slice();
+        state.groupSelectionRows = records.map((record) => record.cells.slice());
+        state.catalog = App.buildColumnCatalog(state.headers, columnCount);
+        await loadPhonebookCatalog(state.settings, { silent: true });
+        state.lastSavedSnapshot = buildSettingsSnapshot(state.settings);
+        state.lastSavedAtText = formatAdminClock(new Date());
+        state.saving = false;
+        renderCatalog();
+        renderUnitsBoard();
+        renderAdminChrome();
+      }
+      const summaryParts = [
+        `המאגר הראשי עודכן מ-${App.formatNumber(records.length)} רשומות.`,
+        replaceResult.createdCount ? `${App.formatNumber(replaceResult.createdCount)} נוספו` : '',
+        replaceResult.updatedCount ? `${App.formatNumber(replaceResult.updatedCount)} עודכנו` : '',
+        replaceResult.deletedCount ? `${App.formatNumber(replaceResult.deletedCount)} הוסרו` : ''
+      ].filter(Boolean);
+      if (seededDates.length) {
+        summaryParts.push(
+          seededDates.length === 1
+            ? `תאריך אחד קיבל שכפול מהמאגר הראשי: ${App.formatDateLabel(seededDates[0])}`
+            : `${App.formatNumber(seededDates.length)} תאריכים ריקים מולאו מהמאגר הראשי`
+        );
+      }
+      if (settingsResult && settingsResult.warning) {
+        summaryParts.push(settingsResult.warning);
+      }
+      if (hadUnsavedChanges) {
+        summaryParts.push('כדי לרענן את כל בוחרי העמודות בלי לאבד טיוטות קיימות, שמרו את ההגדרות או רעננו את המסך אחרי שסיימתם לערוך.');
+      }
+      setStatus(summaryParts.join('. ') + '.', settingsResult && settingsResult.warning ? 'warn' : 'ok');
+    } catch (error) {
+      state.saving = false;
+      renderSaveState();
+      setStatus(error && error.message ? error.message : 'שגיאה בייבוא המאגר הראשי.', 'err');
+    } finally {
+      const input = byId('importSourceExcelInput');
+      if (input instanceof HTMLInputElement) input.value = '';
+    }
+  }
+
+  async function refreshPhonebookColumnsFromDraft() {
+    const select = byId('phonebookColumns');
+    const selected = select instanceof HTMLSelectElement ? selectedValues(select) : (Array.isArray(state.settings.phonebookColumns) ? state.settings.phonebookColumns.slice() : []);
+    await loadPhonebookCatalog({
+      ...state.settings,
+      workbookUrlOverride: readTextFieldValue('workbookUrl')
+    });
+    if (select instanceof HTMLSelectElement) {
+      select.innerHTML = renderColumnOptions(selected, state.phonebookCatalog);
+    }
+  }
+
+  async function loadData() {
+    const settingsResult = await App.loadManagementSettings();
+    state.settings = settingsResult.settings;
+    invalidateAdminModule('operations');
+    invalidateAdminModule('casualties');
+    state.lastSavedSnapshot = buildSettingsSnapshot(state.settings);
+    state.lastSavedAtText = '';
+    state.saving = false;
+    await loadHeaders();
+    renderForm();
+    if (state.unlocked) ensureAdminRecordModulesLoaded(true);
+    if (state.unlocked) scheduleSourceDiagnostics(true);
+    if (settingsResult.warning) setStatus(settingsResult.warning, 'warn');
+    else setStatus('', '');
+  }
+
+  async function unlock() {
+    try {
+      const password = String(byId('gatePassword').value || '').trim();
+      if (!password) {
+        setStatus('\u05d9\u05e9 \u05dc\u05d4\u05d6\u05d9\u05df \u05e7\u05d5\u05d3 \u05de\u05e0\u05d4\u05dc.', 'warn');
+        return;
+      }
+      const hash = await App.sha256Hex(password);
+      if (!state.settings.adminPasswordHash) {
+        state.settings.adminPasswordHash = hash;
+        state.saving = true;
+        renderSaveState();
+        const result = await App.saveManagementSettings(state.settings);
+        state.unlocked = true;
+        syncAdminSession(true);
+        rememberSavedState();
+        setStatus(result.warning ? `\u05e7\u05d5\u05d3 \u05d4\u05de\u05e0\u05d4\u05dc \u05e0\u05e9\u05de\u05e8 \u05de\u05e7\u05d5\u05de\u05d9\u05ea \u05d1\u05dc\u05d1\u05d3. ${result.warning}` : '\u05e7\u05d5\u05d3 \u05d4\u05de\u05e0\u05d4\u05dc \u05e0\u05e9\u05de\u05e8.', result.warning ? 'warn' : 'ok');
+      } else if (hash === state.settings.adminPasswordHash) {
+        state.unlocked = true;
+        syncAdminSession(true);
+        setStatus('\u05de\u05e6\u05d1 \u05e0\u05d9\u05d4\u05d5\u05dc \u05e0\u05e4\u05ea\u05d7.', 'ok');
+      } else {
+        setStatus('\u05e7\u05d5\u05d3 \u05de\u05e0\u05d4\u05dc \u05e9\u05d2\u05d5\u05d9.', 'err');
+      }
+      byId('gatePassword').value = '';
+      renderForm();
+      if (state.unlocked) ensureAdminRecordModulesLoaded(true);
+      if (state.unlocked) scheduleSourceDiagnostics(true);
+    } catch (error) {
+      state.saving = false;
+      renderSaveState();
+      setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05e4\u05ea\u05d9\u05d7\u05ea \u05de\u05e6\u05d1 \u05e0\u05d9\u05d4\u05d5\u05dc.', 'err');
+    }
+  }
+
+  async function addOpenDate() {
+    const value = App.normalizeDateKey(byId('openDateInput').value);
+    if (!value) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05ea\u05d0\u05e8\u05d9\u05da \u05ea\u05e7\u05d9\u05df.', 'warn');
+      return;
+    }
+    await addOpenDates([value], { mode: 'single' });
+  }
+
+  function readAdminDraftSettings() {
+    return {
+      ...state.settings,
+      workbookUrlOverride: readTextFieldValue('workbookUrl'),
+      phonebookWorkbookUrlOverride: '',
+      workbookCopyFolderUrlOverride: readTextFieldValue('datedWorkbookFolderUrl'),
+      chatListTitleOverride: readTextFieldValue('chatListTitle'),
+      operationsLogListTitleOverride: readTextFieldValue('operationsLogListTitle'),
+      casualtyListTitleOverride: readTextFieldValue('casualtyListTitle'),
+      customChatRooms: readChatRoomsFromDom(false),
+      groupColumns: selectedValues(byId('groupColumns')),
+      filterColumns: selectedValues(byId('filterColumns')),
+      editableColumns: selectedValues(byId('editableColumns')),
+      addRowColumns: selectedValues(byId('addRowColumns')),
+      phonebookColumns: selectedValues(byId('phonebookColumns')),
+      frozenColumns: selectedValues(byId('frozenColumns')),
+      dropdownConfigs: readDropdownConfigsFromDom(false),
+      groupCategories: readGroupCategoriesFromDom(false),
+      crossTabs: readCrossTabsFromDom()
+    };
+  }
+
+  function validateAdminDraftSettings(next) {
+    if (!next.groupColumns.length) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05dc\u05e4\u05d7\u05d5\u05ea \u05e2\u05de\u05d5\u05d3\u05ea \u05e7\u05d1\u05d5\u05e6\u05d4 \u05d0\u05d7\u05ea.', 'warn');
+      return false;
+    }
+    if (!next.editableColumns.length) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05dc\u05e4\u05d7\u05d5\u05ea \u05e2\u05de\u05d5\u05d3\u05ea \u05e2\u05e8\u05d9\u05db\u05d4 \u05d0\u05d7\u05ea.', 'warn');
+      return false;
+    }
+    return true;
+  }
+
+  function buildInclusiveDateRange(startKey, endKey) {
+    const start = App.normalizeDateKey(startKey);
+    const end = App.normalizeDateKey(endKey);
+    if (!start || !end) return [];
+    const from = start <= end ? start : end;
+    const to = start <= end ? end : start;
+    const dates = [];
+    let cursor = from;
+    let guard = 0;
+    while (cursor && cursor <= to && guard < 4000) {
+      dates.push(cursor);
+      cursor = App.shiftDate(cursor, 1);
+      guard += 1;
+    }
+    return App.normalizeOpenDates(dates);
+  }
+
+  async function addOpenDates(dateKeys, options) {
+    const nextDates = App.normalizeOpenDates(dateKeys || []);
+    if (!nextDates.length) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05dc\u05e4\u05d7\u05d5\u05ea \u05ea\u05d0\u05e8\u05d9\u05da \u05d0\u05d7\u05d3.', 'warn');
+      return;
+    }
+    try {
+      const currentDates = App.normalizeOpenDates(state.settings.openDates || []);
+      const addedDates = nextDates.filter((item) => !currentDates.includes(item));
+      const next = {
+        ...readAdminDraftSettings(),
+        openDates: App.normalizeOpenDates([...(currentDates || []), ...nextDates])
+      };
+      if (!validateAdminDraftSettings(next)) return;
+      state.settings = App.normalizeSettings(next);
+      renderOpenDates();
+      state.saving = true;
+      renderSaveState();
+      const result = await App.saveManagementSettings(state.settings);
+      const copyProvision = await App.ensureWorkbookCopiesForDates(state.settings, nextDates);
+      const seededDates = [];
+      if (!App.hasWorkbookSource(state.settings)) {
+        for (let index = 0; index < addedDates.length; index += 1) {
+          const seedResult = await App.seedAttendanceRecordsFromSource(addedDates[index], {
+            headers: App.resolveSourceHeaders(state.settings, App.getStaticConfig().workbook.columnCount),
+            columnCount: App.getStaticConfig().workbook.columnCount,
+            currentUser: state.currentUser,
+            isAdminEdit: true
+          });
+          if (seedResult.seeded) seededDates.push(addedDates[index]);
+        }
+      }
+      await loadHeaders();
+      const singleDateInput = byId('openDateInput');
+      const rangeStartInput = byId('openDateRangeStart');
+      const rangeEndInput = byId('openDateRangeEnd');
+      if (singleDateInput) singleDateInput.value = '';
+      if (rangeStartInput) rangeStartInput.value = '';
+      if (rangeEndInput) rangeEndInput.value = '';
+      renderForm();
+      rememberSavedState();
+      const mode = String(options && options.mode || 'single');
+      const statusParts = [];
+      if (mode === 'range') {
+        const firstDate = nextDates[0];
+        const lastDate = nextDates[nextDates.length - 1];
+        statusParts.push(
+          addedDates.length
+            ? `\u05d8\u05d5\u05d5\u05d7 \u05d4\u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd ${App.formatDateLabel(firstDate)} - ${App.formatDateLabel(lastDate)} \u05e2\u05d5\u05d3\u05db\u05df. \u05e0\u05d5\u05e1\u05e4\u05d5 ${App.formatNumber(addedDates.length)} \u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd.`
+            : `\u05d8\u05d5\u05d5\u05d7 \u05d4\u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd ${App.formatDateLabel(firstDate)} - ${App.formatDateLabel(lastDate)} \u05db\u05d1\u05e8 \u05e7\u05d9\u05d9\u05dd \u05d1\u05de\u05dc\u05d5\u05d0\u05d5.`
+        );
+      } else {
+        const value = nextDates[0];
+        statusParts.push(
+          addedDates.length
+            ? `\u05d4\u05ea\u05d0\u05e8\u05d9\u05da ${App.formatDateLabel(value)} \u05e0\u05d5\u05e1\u05e3 \u05d5\u05e0\u05e9\u05de\u05e8.`
+            : `\u05d4\u05ea\u05d0\u05e8\u05d9\u05da ${App.formatDateLabel(value)} \u05db\u05d1\u05e8 \u05e7\u05d9\u05d9\u05dd. \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d3\u05d9\u05e7\u05d4 \u05dc\u05e2\u05d5\u05ea\u05e7 \u05d4\u05e7\u05d5\u05d1\u05e5.`
+        );
+      }
+      if (result.warning) {
+        statusParts.push(result.warning);
+      }
+      if (copyProvision.created.length) {
+        statusParts.push(
+          copyProvision.created.length === 1
+            ? `\u05e0\u05d5\u05e6\u05e8 \u05e2\u05d5\u05ea\u05e7 Excel \u05e2\u05d1\u05d5\u05e8 ${App.formatDateLabel(copyProvision.created[0])}.`
+            : `\u05e0\u05d5\u05e6\u05e8\u05d5 ${App.formatNumber(copyProvision.created.length)} \u05e2\u05d5\u05ea\u05e7\u05d9 Excel \u05dc\u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd \u05d4\u05d7\u05d3\u05e9\u05d9\u05dd.`
+        );
+      } else if (copyProvision.existing.length) {
+        statusParts.push(
+          copyProvision.existing.length === 1
+            ? `\u05e2\u05d5\u05ea\u05e7 Excel \u05e2\u05d1\u05d5\u05e8 ${App.formatDateLabel(copyProvision.existing[0])} \u05db\u05d1\u05e8 \u05e7\u05d9\u05d9\u05dd.`
+            : `\u05e0\u05de\u05e6\u05d0\u05d5 ${App.formatNumber(copyProvision.existing.length)} \u05e2\u05d5\u05ea\u05e7\u05d9 Excel \u05e7\u05d9\u05d9\u05de\u05d9\u05dd.`
+        );
+      }
+      if (copyProvision.failed.length) {
+        const failedDates = copyProvision.failed.slice(0, 3).map((item) => App.formatDateLabel(item.dateKey)).join(', ');
+        statusParts.push(`\u05d9\u05e6\u05d9\u05e8\u05ea \u05e2\u05d5\u05ea\u05e7\u05d9 Excel \u05e0\u05db\u05e9\u05dc\u05d4 \u05e2\u05d1\u05d5\u05e8 ${App.formatNumber(copyProvision.failed.length)} \u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd: ${failedDates}`);
+      }
+      if (seededDates.length) {
+        statusParts.push(
+          seededDates.length === 1
+            ? `המאגר הראשי הועתק אוטומטית אל ${App.formatDateLabel(seededDates[0])}.`
+            : `המאגר הראשי הועתק אוטומטית אל ${App.formatNumber(seededDates.length)} תאריכים חדשים.`
+        );
+      }
+      setStatus(statusParts.join(' '), result.warning || copyProvision.failed.length ? 'warn' : 'ok');
+    } catch (error) {
+      state.saving = false;
+      renderSaveState();
+      setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05e2\u05d3\u05db\u05d5\u05df \u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd \u05e4\u05ea\u05d5\u05d7\u05d9\u05dd.', 'err');
+    }
+  }
+
+  async function addOpenDateRange() {
+    const startValue = App.normalizeDateKey(byId('openDateRangeStart') && byId('openDateRangeStart').value);
+    const endValue = App.normalizeDateKey(byId('openDateRangeEnd') && byId('openDateRangeEnd').value);
+    if (!startValue || !endValue) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05ea\u05d0\u05e8\u05d9\u05da \u05d4\u05ea\u05d7\u05dc\u05d4 \u05d5\u05ea\u05d0\u05e8\u05d9\u05da \u05e1\u05d9\u05d5\u05dd.', 'warn');
+      return;
+    }
+    const dates = buildInclusiveDateRange(startValue, endValue);
+    if (!dates.length) {
+      setStatus('\u05d8\u05d5\u05d5\u05d7 \u05d4\u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd \u05dc\u05d0 \u05ea\u05e7\u05d9\u05df.', 'warn');
+      return;
+    }
+    await addOpenDates(dates, { mode: 'range' });
+  }
+
+  function removeOpenDate(dateKey) {
+    const value = App.normalizeDateKey(dateKey);
+    if (!value) return;
+    if (value === App.todayKey()) {
+      setStatus('\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d4\u05e1\u05d9\u05e8 \u05d0\u05ea \u05ea\u05d0\u05e8\u05d9\u05da \u05d4\u05d9\u05d5\u05dd.', 'warn');
+      return;
+    }
+    state.settings.openDates = App.normalizeOpenDates((state.settings.openDates || []).filter((item) => item !== value));
+    renderOpenDates();
+    renderAdminChrome();
+    setStatus(`\u05d4\u05ea\u05d0\u05e8\u05d9\u05da ${App.formatDateLabel(value)} \u05d4\u05d5\u05e1\u05e8.`, 'ok');
+  }
+
+  function persistGroupCategoryDraft() {
+    state.settings.groupCategories = readGroupCategoriesFromDom(true);
+  }
+
+  function toggleGroupCategoryOption(option) {
+    if (!(option instanceof HTMLOptionElement)) return;
+    const select = option.parentElement;
+    if (!(select instanceof HTMLSelectElement) || !select.classList.contains('group-category-members') || !select.multiple) return;
+    const scrollTop = select.scrollTop;
+    option.selected = !option.selected;
+    select.focus();
+    select.scrollTop = scrollTop;
+    persistGroupCategoryDraft();
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function addGroupCategory() {
+    const current = readGroupCategoriesFromDom(true);
+    current.unshift({
+      id: `group-category-${Date.now()}`,
+      label: '',
+      selections: []
+    });
+    state.settings.groupCategories = current;
+    renderGroupCategories();
+    renderAdminChrome();
+    const latestCard = document.querySelector('.group-category-card');
+    const latestInput = latestCard && latestCard.querySelector('.group-category-label');
+    if (latestInput instanceof HTMLInputElement) {
+      latestInput.focus();
+      latestInput.select();
+    }
+    setStatus(currentAdminGroupColumns().length
+      ? 'נוספה קטגוריה חדשה בראש הרשימה. תנו לה שם ובחרו את היחידות שייכנסו אליה.'
+      : 'נוספה קטגוריה חדשה בראש הרשימה. עכשיו בחרו גם עמודות קבוצה ראשית כדי לשייך אליה יחידות.', 'ok');
+  }
+
+  function addPreset(chartType) {
+    state.settings.crossTabs.push({
+      id: `preset-${Date.now()}`,
+      label: '\u05d2\u05e8\u05e3 \u05d7\u05d3\u05e9',
+      rowColumns: [state.settings.groupColumns[0] || 'A'],
+      colColumns: [],
+      chartType: String(chartType || 'bar'),
+      dataScope: 'scoped',
+      aggregation: 'count',
+      valueColumn: '',
+      palette: 'aurora',
+      customColors: [],
+      layoutSpan: 1,
+      layoutSpanTablet: 1,
+      layoutSpanMobile: 1,
+      maxItems: 8,
+      showToUsers: true,
+      showTotals: true,
+      showLegend: true,
+      showValues: true,
+      showLabels: true,
+      showGrid: true,
+      animate: true,
+      legendPosition: 'top',
+      borderWidth: 2,
+      borderRadius: 10,
+      padding: 12,
+      minHeight: 300,
+      animationMs: 700,
+      scaleStep: 0
+    });
+    renderCrossTabs();
+    renderAdminChrome();
+  }
+
+  function addDropdownConfig() {
+    const current = readDropdownConfigsFromDom(true);
+    const fallbackColumn = state.settings.editableColumns[0] || state.catalog[0] && state.catalog[0].letter || 'A';
+    current.push({
+      id: `dropdown-${Date.now()}`,
+      column: fallbackColumn,
+      options: []
+    });
+    state.settings.dropdownConfigs = current;
+    renderDropdownConfigs();
+    renderAdminChrome();
+  }
+
+  function addDropdownOptions(card) {
+    const index = Number(card && card.dataset ? card.dataset.index : -1);
+    if (index < 0) return;
+    const current = readDropdownConfigsFromDom(true);
+    const field = card.querySelector('.dropdown-option-input');
+    const additions = parseDropdownOptionTokens(field ? field.value : '');
+    if (!additions.length) {
+      setStatus('\u05d9\u05e9 \u05dc\u05d4\u05d6\u05d9\u05df \u05d0\u05e4\u05e9\u05e8\u05d5\u05ea dropdown \u05d0\u05d7\u05ea \u05dc\u05e4\u05d7\u05d5\u05ea.', 'warn');
+      return;
+    }
+    current[index].options = App.uniqueSorted([...(current[index].options || []), ...additions]);
+    state.settings.dropdownConfigs = current;
+    renderDropdownConfigs();
+    renderAdminChrome();
+  }
+
+  function removeDropdownOption(card, value) {
+    const index = Number(card && card.dataset ? card.dataset.index : -1);
+    if (index < 0) return;
+    const current = readDropdownConfigsFromDom(true);
+    current[index].options = (current[index].options || []).filter((item) => item !== value);
+    state.settings.dropdownConfigs = current;
+    renderDropdownConfigs();
+    renderAdminChrome();
+  }
+
+  function removeDropdownConfig(card) {
+    const index = Number(card && card.dataset ? card.dataset.index : -1);
+    if (index < 0) return;
+    const current = readDropdownConfigsFromDom(true);
+    current.splice(index, 1);
+    state.settings.dropdownConfigs = current;
+    renderDropdownConfigs();
+    renderAdminChrome();
+  }
+
+  function readCrossTabsFromDom() {
+    const next = Array.from(document.querySelectorAll('.preset-card')).map((card, index) => {
+      return {
+        id: card.dataset.index ? `preset-${index + 1}` : `preset-${Date.now()}-${index}`,
+        label: String(card.querySelector('.preset-label').value || '').trim(),
+        rowColumns: selectedValuesWithPrimary(card, '.preset-rows', '.preset-row-primary'),
+        colColumns: selectedValuesWithPrimary(card, '.preset-cols', '.preset-col-primary'),
+        chartType: String(card.querySelector('.preset-chart-type').value || 'stacked').trim(),
+        dataScope: String(card.querySelector('.preset-scope').value || 'scoped').trim(),
+        aggregation: String(card.querySelector('.preset-aggregation').value || 'count').trim(),
+        valueColumn: String(card.querySelector('.preset-value-column').value || '').trim(),
+        palette: String(card.querySelector('.preset-palette').value || 'aurora').trim(),
+        customColors: String(card.querySelector('.preset-custom-colors').value || '').split(/[,\n]+/).map((item) => String(item || '').trim()).filter(Boolean),
+        layoutSpan: Number(card.querySelector('.preset-span').value || 1) >= 2 ? 2 : 1,
+        layoutSpanTablet: Number(card.querySelector('.preset-span-tablet').value || 1) >= 2 ? 2 : 1,
+        layoutSpanMobile: Number(card.querySelector('.preset-span-mobile').value || 1) >= 2 ? 2 : 1,
+        maxItems: Math.min(ADMIN_DASHBOARD_MAX_ITEMS_LIMIT, Math.max(3, Number(card.querySelector('.preset-max-items').value || 8) || 8)),
+        showToUsers: !!(card.querySelector('.preset-show-to-users') && card.querySelector('.preset-show-to-users').checked),
+        showTotals: !!(card.querySelector('.preset-show-totals') && card.querySelector('.preset-show-totals').checked),
+        showLegend: !!(card.querySelector('.preset-show-legend') && card.querySelector('.preset-show-legend').checked),
+        showValues: !!(card.querySelector('.preset-show-values') && card.querySelector('.preset-show-values').checked),
+        showLabels: !!(card.querySelector('.preset-show-labels') && card.querySelector('.preset-show-labels').checked),
+        showGrid: !!(card.querySelector('.preset-show-grid') && card.querySelector('.preset-show-grid').checked),
+        animate: !!(card.querySelector('.preset-animate') && card.querySelector('.preset-animate').checked),
+        legendPosition: String(card.querySelector('.preset-legend-position').value || 'top').trim(),
+        borderWidth: Number(card.querySelector('.preset-border-width').value || 2),
+        borderRadius: Number(card.querySelector('.preset-border-radius').value || 10),
+        padding: Number(card.querySelector('.preset-padding').value || 12),
+        minHeight: Number(card.querySelector('.preset-min-height').value || 300),
+        animationMs: Number(card.querySelector('.preset-animation-ms').value || 700),
+        scaleStep: Number(card.querySelector('.preset-scale-step').value || 0)
+      };
+    }).filter((item) => item.label && item.rowColumns.length);
+    return App.normalizeSettings({ ...state.settings, crossTabs: next }).crossTabs;
+  }
+
+  async function saveSettings() {
+    try {
+      const next = {
+        ...state.settings,
+        workbookUrlOverride: readTextFieldValue('workbookUrl'),
+        phonebookWorkbookUrlOverride: '',
+        workbookCopyFolderUrlOverride: readTextFieldValue('datedWorkbookFolderUrl'),
+        chatListTitleOverride: readTextFieldValue('chatListTitle'),
+        operationsLogListTitleOverride: readTextFieldValue('operationsLogListTitle'),
+        casualtyListTitleOverride: readTextFieldValue('casualtyListTitle'),
+        customChatRooms: readChatRoomsFromDom(false),
+        groupColumns: selectedValues(byId('groupColumns')),
+        filterColumns: selectedValues(byId('filterColumns')),
+        editableColumns: selectedValues(byId('editableColumns')),
+        addRowColumns: selectedValues(byId('addRowColumns')),
+        phonebookColumns: selectedValues(byId('phonebookColumns')),
+        frozenColumns: selectedValues(byId('frozenColumns')),
+        dropdownConfigs: readDropdownConfigsFromDom(false),
+        groupCategories: readGroupCategoriesFromDom(false),
+        crossTabs: readCrossTabsFromDom()
+      };
+      if (!next.groupColumns.length) {
+        setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05dc\u05e4\u05d7\u05d5\u05ea \u05e2\u05de\u05d5\u05d3\u05ea \u05e7\u05d1\u05d5\u05e6\u05d4 \u05d0\u05d7\u05ea.', 'warn');
+        return;
+      }
+      if (!next.editableColumns.length) {
+        setStatus('\u05d9\u05e9 \u05dc\u05d1\u05d7\u05d5\u05e8 \u05dc\u05e4\u05d7\u05d5\u05ea \u05e2\u05de\u05d5\u05d3\u05ea \u05e2\u05e8\u05d9\u05db\u05d4 \u05d0\u05d7\u05ea.', 'warn');
+        return;
+      }
+      state.settings = App.normalizeSettings(next);
+      invalidateAdminModule('operations');
+      invalidateAdminModule('casualties');
+      state.saving = true;
+      renderSaveState();
+      const result = await App.saveManagementSettings(state.settings);
+      const copyProvision = await App.ensureWorkbookCopiesForDates(state.settings, state.settings.openDates);
+      await loadHeaders();
+      renderForm();
+      ensureAdminRecordModulesLoaded(true);
+      scheduleSourceDiagnostics(true);
+      rememberSavedState();
+      const statusParts = [
+        result.warning
+          ? `\u05d4\u05d2\u05d3\u05e8\u05d5\u05ea \u05d4\u05e0\u05d9\u05d4\u05d5\u05dc \u05e0\u05e9\u05de\u05e8\u05d5 \u05de\u05e7\u05d5\u05de\u05d9\u05ea \u05d1\u05dc\u05d1\u05d3. ${result.warning}`
+          : '\u05d4\u05d2\u05d3\u05e8\u05d5\u05ea \u05d4\u05e0\u05d9\u05d4\u05d5\u05dc \u05e0\u05e9\u05de\u05e8\u05d5.'
+      ];
+      if (copyProvision.created.length) {
+        statusParts.push(`\u05e0\u05d5\u05e6\u05e8\u05d5 ${App.formatNumber(copyProvision.created.length)} \u05e2\u05d5\u05ea\u05e7\u05d9 \u05ea\u05d0\u05e8\u05d9\u05da.`);
+      }
+      if (copyProvision.existing.length) {
+        statusParts.push(`\u05e0\u05de\u05e6\u05d0\u05d5 ${App.formatNumber(copyProvision.existing.length)} \u05e2\u05d5\u05ea\u05e7\u05d9\u05dd \u05e7\u05d9\u05d9\u05de\u05d9\u05dd.`);
+      }
+      if (copyProvision.failed.length) {
+        const failedDates = copyProvision.failed.slice(0, 3).map((item) => App.formatDateLabel(item.dateKey)).join(', ');
+        statusParts.push(`\u05d4\u05e2\u05ea\u05e7\u05d4 \u05e0\u05db\u05e9\u05dc\u05d4 \u05e2\u05d1\u05d5\u05e8 ${App.formatNumber(copyProvision.failed.length)} \u05ea\u05d0\u05e8\u05d9\u05db\u05d9\u05dd: ${failedDates}`);
+      }
+      setStatus(statusParts.join(' '), result.warning || copyProvision.failed.length ? 'warn' : 'ok');
+    } catch (error) {
+      state.saving = false;
+      renderSaveState();
+      setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05e9\u05de\u05d9\u05e8\u05ea \u05d4\u05d4\u05d2\u05d3\u05e8\u05d5\u05ea.', 'err');
+    }
+  }
+
+  async function submitChangePassword() {
+    let previousHash = state.settings.adminPasswordHash;
+    try {
+      const hasExistingPassword = !!state.settings.adminPasswordHash;
+      const currentPassword = String(byId('currentPasswordInput').value || '').trim();
+      const nextPassword = String(byId('nextPasswordInput').value || '').trim();
+      const confirmPassword = String(byId('confirmPasswordInput').value || '').trim();
+      const closeButton = byId('closeChangePasswordDialogBtn');
+      const submitButton = byId('submitChangePasswordBtn');
+      if (hasExistingPassword && !currentPassword) {
+        setPasswordDialogStatus('\u05d9\u05e9 \u05dc\u05d4\u05d6\u05d9\u05df \u05e7\u05d5\u05d3 \u05de\u05e0\u05d4\u05dc \u05e0\u05d5\u05db\u05d7\u05d9.', 'warn');
+        return;
+      }
+      if (!nextPassword) {
+        setPasswordDialogStatus('\u05d9\u05e9 \u05dc\u05d4\u05d6\u05d9\u05df \u05e7\u05d5\u05d3 \u05de\u05e0\u05d4\u05dc \u05d7\u05d3\u05e9.', 'warn');
+        return;
+      }
+      if (nextPassword !== confirmPassword) {
+        setPasswordDialogStatus('\u05d0\u05d9\u05de\u05d5\u05ea \u05d4\u05e7\u05d5\u05d3 \u05d4\u05d7\u05d3\u05e9 \u05dc\u05d0 \u05ea\u05d5\u05d0\u05dd.', 'err');
+        return;
+      }
+      if (hasExistingPassword) {
+        const currentHash = await App.sha256Hex(currentPassword);
+        if (currentHash !== state.settings.adminPasswordHash) {
+          setPasswordDialogStatus('\u05d4\u05e7\u05d5\u05d3 \u05d4\u05e0\u05d5\u05db\u05d7\u05d9 \u05e9\u05d2\u05d5\u05d9.', 'err');
+          return;
+        }
+      }
+      const nextHash = await App.sha256Hex(nextPassword);
+      state.settings.adminPasswordHash = nextHash;
+      if (closeButton instanceof HTMLButtonElement) closeButton.disabled = true;
+      if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
+      setPasswordDialogStatus('\u05de\u05e2\u05d3\u05db\u05df \u05d0\u05ea \u05e7\u05d5\u05d3 \u05d4\u05de\u05e0\u05d4\u05dc...', '');
+      state.saving = true;
+      renderSaveState();
+      const result = await App.saveManagementSettings(state.settings);
+      closeChangePasswordDialog();
+      rememberSavedState();
+      setStatus(result.warning ? `\u05e7\u05d5\u05d3 \u05d4\u05de\u05e0\u05d4\u05dc \u05e2\u05d5\u05d3\u05db\u05df \u05de\u05e7\u05d5\u05de\u05d9\u05ea \u05d1\u05dc\u05d1\u05d3. ${result.warning}` : '\u05e7\u05d5\u05d3 \u05d4\u05de\u05e0\u05d4\u05dc \u05e2\u05d5\u05d3\u05db\u05df.', result.warning ? 'warn' : 'ok');
+    } catch (error) {
+      state.settings.adminPasswordHash = previousHash;
+      state.saving = false;
+      renderSaveState();
+      setPasswordDialogStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05e2\u05d3\u05db\u05d5\u05df \u05e7\u05d5\u05d3 \u05d4\u05de\u05e0\u05d4\u05dc.', 'err');
+      const closeButton = byId('closeChangePasswordDialogBtn');
+      const submitButton = byId('submitChangePasswordBtn');
+      if (closeButton instanceof HTMLButtonElement) closeButton.disabled = false;
+      if (submitButton instanceof HTMLButtonElement) submitButton.disabled = false;
+    }
+  }
+
+  function bindEvents() {
+    const adminSidebarTabs = byId('adminSidebarTabs');
+    if (adminSidebarTabs) {
+      adminSidebarTabs.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const button = target.closest('.admin-side-tab[data-admin-tab]');
+        if (!(button instanceof HTMLButtonElement)) return;
+        setAdminTab(String(button.dataset.adminTab || 'operations'));
+      });
+    }
+    byId('unlockBtn').addEventListener('click', unlock);
+    byId('gatePassword').addEventListener('keydown', (event) => {
+      if (!(event instanceof KeyboardEvent)) return;
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      unlock();
+    });
+    byId('addDateBtn').addEventListener('click', addOpenDate);
+    byId('openDateInput').addEventListener('keydown', (event) => {
+      if (!(event instanceof KeyboardEvent)) return;
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      addOpenDate();
+    });
+    byId('addDateRangeBtn').addEventListener('click', addOpenDateRange);
+    ['openDateRangeStart', 'openDateRangeEnd'].forEach((id) => {
+      const field = byId(id);
+      if (!(field instanceof HTMLInputElement)) return;
+      field.addEventListener('keydown', (event) => {
+        if (!(event instanceof KeyboardEvent)) return;
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        addOpenDateRange();
+      });
+    });
+    byId('addPresetBtn').addEventListener('click', addPreset);
+    document.querySelectorAll('.gallery-btn[data-graph-type]').forEach((button) => {
+      button.addEventListener('click', () => {
+        addPreset(String(button.getAttribute('data-graph-type') || 'bar'));
+        setAdminTab('graphs');
+      });
+    });
+    document.querySelectorAll('.clear-select').forEach((button) => {
+      button.addEventListener('click', () => {
+        const targetId = String(button.getAttribute('data-clear-select') || '');
+        const select = byId(targetId);
+        if (!(select instanceof HTMLSelectElement)) return;
+        Array.from(select.options).forEach((option) => {
+          option.selected = false;
+        });
+        renderAdminChrome();
+      });
+    });
+    byId('addDropdownConfigBtn').addEventListener('click', addDropdownConfig);
+    byId('addGroupCategoryBtn').addEventListener('click', addGroupCategory);
+    const addChatRoomButton = byId('addChatRoomBtn');
+    if (addChatRoomButton instanceof HTMLButtonElement) {
+      addChatRoomButton.addEventListener('click', addChatRoom);
+    }
+    byId('addOperationsEntryBtn').addEventListener('click', () => openAdminRecordDialog('operations', 'create', 0));
+    byId('addCasualtyEntryBtn').addEventListener('click', () => openAdminRecordDialog('casualties', 'create', 0));
+    byId('refreshOperationsBtn').addEventListener('click', () => {
+      loadAdminModuleItems('operations', true).catch((error) => {
+        setStatus(error.message || 'שגיאה ברענון יומן המבצעים.', 'err');
+      });
+    });
+    byId('refreshCasualtiesBtn').addEventListener('click', () => {
+      loadAdminModuleItems('casualties', true).catch((error) => {
+        setStatus(error.message || 'שגיאה ברענון נפגעים ורכוש.', 'err');
+      });
+    });
+    const unitsSearch = byId('unitsSearch');
+    if (unitsSearch instanceof HTMLInputElement) {
+      unitsSearch.addEventListener('input', () => {
+        state.unitsSearchText = String(unitsSearch.value || '').trim();
+        renderUnitsBoard();
+      });
+    }
+    const refreshSourceButton = byId('refreshSourceRecordsBtn');
+    if (refreshSourceButton instanceof HTMLButtonElement) {
+      refreshSourceButton.addEventListener('click', async () => {
+        try {
+          await loadHeaders();
+          renderUnitsBoard();
+          setStatus('המאגר הראשי נטען מחדש.', 'ok');
+        } catch (error) {
+          setStatus(error && error.message ? error.message : 'שגיאה ברענון המאגר הראשי.', 'err');
+        }
+      });
+    }
+    const importSourceButton = byId('importSourceExcelBtn');
+    if (importSourceButton instanceof HTMLButtonElement) {
+      importSourceButton.addEventListener('click', () => {
+        const input = byId('importSourceExcelInput');
+        if (input instanceof HTMLInputElement) input.click();
+      });
+    }
+    const importSourceInput = byId('importSourceExcelInput');
+    if (importSourceInput instanceof HTMLInputElement) {
+      importSourceInput.addEventListener('change', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) || !target.files || !target.files[0]) return;
+        importSourceRecordsFromFile(target.files[0]);
+      });
+    }
+    byId('changePasswordBtn').addEventListener('click', openChangePasswordDialog);
+    byId('closeChangePasswordDialogBtn').addEventListener('click', closeChangePasswordDialog);
+    byId('submitChangePasswordBtn').addEventListener('click', submitChangePassword);
+    byId('closeAdminRecordDialogBtn').addEventListener('click', closeAdminRecordDialog);
+    byId('submitAdminRecordBtn').addEventListener('click', submitAdminRecordDialog);
+    byId('adminRecordLookupBtn').addEventListener('click', performAdminRecordLookup);
+    byId('applyAdminRecordLookupBtn').addEventListener('click', applyAdminRecordLookup);
+    const changePasswordDialog = getChangePasswordDialog();
+    if (changePasswordDialog) {
+      changePasswordDialog.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        closeChangePasswordDialog();
+      });
+    }
+    const adminRecordDialog = getAdminRecordDialog();
+    if (adminRecordDialog) {
+      adminRecordDialog.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        closeAdminRecordDialog();
+      });
+    }
+    document.querySelectorAll('[data-module-view]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const moduleKey = String(button.getAttribute('data-module-view') || '').trim();
+        const view = String(button.getAttribute('data-view') || 'table').trim();
+        const moduleState = getAdminModuleState(moduleKey);
+        if (!moduleState) return;
+        moduleState.view = view === 'cards' ? 'cards' : 'table';
+        renderAdminModule(moduleKey);
+      });
+    });
+    ['operationsLogBoard', 'casualtiesBoard'].forEach((boardId) => {
+      const board = byId(boardId);
+      if (!(board instanceof HTMLElement)) return;
+      board.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const actionButton = target.closest('[data-module-action][data-item-id][data-module-key]');
+        if (!(actionButton instanceof HTMLElement)) return;
+        const moduleKey = String(actionButton.dataset.moduleKey || '').trim();
+        const itemId = Number(actionButton.dataset.itemId || 0);
+        const action = String(actionButton.dataset.moduleAction || '').trim();
+        if (action === 'edit') {
+          openAdminRecordDialog(moduleKey, 'edit', itemId);
+          return;
+        }
+        if (action === 'delete') {
+          deleteAdminModuleItem(moduleKey, itemId);
+        }
+      });
+    });
+    ['currentPasswordInput', 'nextPasswordInput', 'confirmPasswordInput'].forEach((id) => {
+      byId(id).addEventListener('keydown', (event) => {
+        if (!(event instanceof KeyboardEvent)) return;
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        submitChangePassword();
+      });
+    });
+    byId('saveBtn').addEventListener('click', saveSettings);
+    byId('openDates').addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const button = target.closest('button[data-date]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      removeOpenDate(String(button.dataset.date || ''));
+    });
+    byId('crossTabs').addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const card = target.closest('.preset-card');
+      if (!(card instanceof HTMLElement)) return;
+      updatePresetCardPresentation(card);
+    });
+    byId('crossTabs').addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const card = target.closest('.preset-card');
+      if (!(card instanceof HTMLElement)) return;
+      if (target.matches('.preset-row-primary')) {
+        syncPresetCardSelectors(card, 'row-primary');
+        return;
+      }
+      if (target.matches('.preset-col-primary')) {
+        syncPresetCardSelectors(card, 'col-primary');
+        return;
+      }
+      if (target.matches('.preset-rows')) {
+        syncPresetCardSelectors(card, 'rows');
+        return;
+      }
+      if (target.matches('.preset-cols')) {
+        syncPresetCardSelectors(card, 'cols');
+        renderAdminChrome();
+        return;
+      }
+      updatePresetCardPresentation(card);
+      renderAdminChrome();
+    });
+    byId('crossTabs').addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const clearButton = target.closest('.clear-preset-select');
+      if (clearButton instanceof HTMLButtonElement) {
+        const card = clearButton.closest('.preset-card');
+        if (!(card instanceof HTMLElement)) return;
+        const className = String(clearButton.dataset.targetClass || '');
+        const select = className ? card.querySelector(`.${className}`) : null;
+        if (!(select instanceof HTMLSelectElement)) return;
+        Array.from(select.options).forEach((option) => {
+          option.selected = false;
+        });
+        if (className === 'preset-cols') {
+          syncPresetCardSelectors(card, 'cols');
+        } else {
+          updatePresetCardPresentation(card);
+        }
+        renderAdminChrome();
+        return;
+      }
+      const removeButton = target.closest('.remove-preset');
+      if (!(removeButton instanceof HTMLButtonElement)) return;
+      const card = removeButton.closest('.preset-card');
+      if (!(card instanceof HTMLElement)) return;
+      const index = Number(card.dataset.index || -1);
+      if (index < 0) return;
+      const current = readCrossTabsFromDom();
+      current.splice(index, 1);
+      state.settings.crossTabs = current;
+      renderCrossTabs();
+      renderAdminChrome();
+    });
+    byId('dropdownConfigs').addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const card = target.closest('.dropdown-card');
+      if (!(card instanceof HTMLElement)) return;
+      const addButton = target.closest('.add-dropdown-option');
+      if (addButton instanceof HTMLButtonElement) {
+        addDropdownOptions(card);
+        return;
+      }
+      const removeOptionButton = target.closest('.remove-dropdown-option');
+      if (removeOptionButton instanceof HTMLButtonElement) {
+        removeDropdownOption(card, String(removeOptionButton.dataset.value || ''));
+        return;
+      }
+      const removeConfigButton = target.closest('.remove-dropdown-config');
+      if (removeConfigButton instanceof HTMLButtonElement) {
+        removeDropdownConfig(card);
+      }
+    });
+    byId('dropdownConfigs').addEventListener('keydown', (event) => {
+      if (!(event instanceof KeyboardEvent)) return;
+      if (event.key !== 'Enter') return;
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || !target.classList.contains('dropdown-option-input')) return;
+      const card = target.closest('.dropdown-card');
+      if (!(card instanceof HTMLElement)) return;
+      event.preventDefault();
+      addDropdownOptions(card);
+    });
+    byId('groupCategories').addEventListener('mousedown', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLOptionElement)) return;
+      const select = target.parentElement;
+      if (!(select instanceof HTMLSelectElement) || !select.classList.contains('group-category-members')) return;
+      event.preventDefault();
+      toggleGroupCategoryOption(target);
+    });
+    byId('groupCategories').addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const card = target.closest('.group-category-card');
+      if (!(card instanceof HTMLElement)) return;
+      const clearButton = target.closest('.clear-group-category-members');
+      if (clearButton instanceof HTMLButtonElement) {
+        const select = card.querySelector('.group-category-members');
+        if (select instanceof HTMLSelectElement) {
+          Array.from(select.options).forEach((option) => {
+            option.selected = false;
+          });
+        }
+        persistGroupCategoryDraft();
+        renderAdminChrome();
+        return;
+      }
+      const removeButton = target.closest('.remove-group-category');
+      if (!(removeButton instanceof HTMLButtonElement)) return;
+      const current = readGroupCategoriesFromDom(true);
+      const index = Number(card.dataset.index || -1);
+      if (index < 0) return;
+      current.splice(index, 1);
+      state.settings.groupCategories = current;
+      renderGroupCategories();
+      renderAdminChrome();
+    });
+    byId('groupCategories').addEventListener('input', () => {
+      persistGroupCategoryDraft();
+    });
+    byId('groupCategories').addEventListener('change', () => {
+      persistGroupCategoryDraft();
+    });
+    const chatRoomsHost = byId('chatRooms');
+    if (chatRoomsHost instanceof HTMLElement) {
+      chatRoomsHost.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const card = target.closest('.chat-room-config-card');
+        if (!(card instanceof HTMLElement)) return;
+        const removeButton = target.closest('.remove-chat-room');
+        if (!(removeButton instanceof HTMLButtonElement)) return;
+        const current = readChatRoomsFromDom(true);
+        const index = Number(card.dataset.index || -1);
+        if (index < 0) return;
+        current.splice(index, 1);
+        state.settings.customChatRooms = current;
+        renderChatRooms();
+        renderAdminChrome();
+      });
+      chatRoomsHost.addEventListener('input', () => {
+        persistChatRoomDraft();
+      });
+      chatRoomsHost.addEventListener('change', () => {
+        persistChatRoomDraft();
+      });
+    }
+    const diagnosticsButton = byId('runDiagnosticsBtn');
+    if (diagnosticsButton) {
+      diagnosticsButton.addEventListener('click', () => {
+        scheduleSourceDiagnostics(true);
+      });
+    }
+    const workbookUrlField = byId('workbookUrl');
+    if (workbookUrlField) {
+      workbookUrlField.addEventListener('change', () => {
+        refreshPhonebookColumnsFromDraft().catch((error) => {
+          setStatus(error.message || '\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05e8\u05e2\u05e0\u05d5\u05df \u05e2\u05de\u05d5\u05d3\u05d5\u05ea \u05e1\u05e4\u05e8 \u05d4\u05d8\u05dc\u05e4\u05d5\u05e0\u05d9\u05dd.', 'err');
+        }).finally(() => {
+          scheduleSourceDiagnostics(false);
+        });
+      });
+    }
+    const workbookFolderField = byId('datedWorkbookFolderUrl');
+    if (workbookFolderField) {
+      workbookFolderField.addEventListener('change', () => {
+        renderSourceDiagnostics();
+        scheduleSourceDiagnostics(false);
+      });
+    }
+    if (byId('adminRecordLookupInput')) {
+      byId('adminRecordLookupInput').addEventListener('keydown', (event) => {
+        if (!(event instanceof KeyboardEvent) || event.key !== 'Enter') return;
+        event.preventDefault();
+        performAdminRecordLookup();
+      });
+    }
+    if (byId('adminRecordFields')) {
+      byId('adminRecordFields').addEventListener('input', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (String(state.recordDialog.moduleKey || '') === 'casualties' && target.getAttribute('data-record-field') === 'personalNumber') {
+          const lookupInput = byId('adminRecordLookupInput');
+          if (lookupInput instanceof HTMLInputElement) lookupInput.value = target.value || '';
+        }
+      });
+    }
+    byId('adminPanel').addEventListener('input', () => {
+      renderAdminChrome();
+    });
+    byId('adminPanel').addEventListener('change', () => {
+      renderAdminChrome();
+    });
+    byId('groupColumns').addEventListener('change', () => {
+      state.settings.groupCategories = readGroupCategoriesFromDom(true);
+      renderGroupCategories();
+      renderAdminChrome();
+      scheduleSourceDiagnostics(false);
+    });
+    ['filterColumns', 'editableColumns', 'addRowColumns', 'phonebookColumns', 'frozenColumns'].forEach((id) => {
+      byId(id).addEventListener('change', () => {
+        scheduleSourceDiagnostics(false);
+      });
+    });
+  }
+
+  function handleAdminLoadFailure(error) {
+    const message = error && error.message ? String(error.message) : 'שגיאה בטעינת מסך הניהול.';
+    const groupCategoryStatus = byId('groupCategoryStatus');
+    if (groupCategoryStatus) {
+      groupCategoryStatus.textContent = '';
+    }
+    setStatus(message, 'err');
+  }
+
+  function init() {
+    App.initShellSidebar();
+    ensureAdminLiveTimer();
+    bindEvents();
+    hydrateAdminIdentity();
+    loadData().catch(handleAdminLoadFailure);
+  }
+
+  init();
+})();
+
+
+/* ============================================================
+   Section: Page Controller - admin-connections.html
+   ============================================================ */
+
+(() => {
+  'use strict';
+
+  if (!document.body || document.body.dataset.page !== 'admin-connections') return;
+
+  const App = window.AttendanceApp;
+  const OPERATIONS_STATUS_OPTIONS = Object.freeze(['פתוח', 'בטיפול', 'מוקפא', 'סגור']);
+  const YES_NO_OPTIONS = Object.freeze(['כן', 'לא']);
+  const state = {
+    currentUser: { name: '', email: '', login: '' },
+    settings: App.createDefaultSettings(),
+    settingsSource: '',
+    siteBase: '',
+    activeTab: 'wizard',
+    siteLists: [],
+    checks: [],
+    busy: false,
+    busyLabel: '',
+    importSummary: {
+      fileName: '',
+      importedRows: 0,
+      seededDates: 0,
+      updatedAt: '',
+      warning: ''
+    },
+    schemaEditor: {
+      listTitle: '',
+      listLabel: '',
+      targetValue: '',
+      fields: [],
+      lastLoadedAt: '',
+      showHidden: false,
+      message: 'בחרו רשימה כדי לטעון את מבנה השדות שלה.'
+    }
+  };
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function setStatus(message, kind) {
+    const el = byId('status');
+    el.className = `status${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  function renderSidebarIdentity() {
+    const container = document.querySelector('.qb-sidebar .qb-side-user');
+    if (!(container instanceof HTMLElement)) return;
+    const avatar = byId('adminConnectionsSidebarAvatar') || container.querySelector('.qb-side-avatar');
+    const title = byId('adminConnectionsSidebarTitle') || container.querySelector('strong');
+    let subtitle = byId('adminConnectionsSidebarSubtitle') || container.querySelector('span');
+    const titleWrap = title && title.parentElement ? title.parentElement : container.querySelector('div:last-child');
+    if (!subtitle && titleWrap instanceof HTMLElement) {
+      subtitle = document.createElement('span');
+      titleWrap.appendChild(subtitle);
+    }
+    const displayName = App.getUserDisplayName(state.currentUser);
+    if (avatar) avatar.textContent = App.getUserAvatarText(state.currentUser, 'AD');
+    if (title) title.textContent = displayName || 'ניהול';
+    if (subtitle) subtitle.textContent = 'מנהל';
+  }
+
+  async function hydrateSidebarIdentity() {
+    try {
+      state.currentUser = await App.getCurrentUser();
+      renderSidebarIdentity();
+    } catch (error) {}
+  }
+
+  function escapeXml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function buildFieldSchema(definition) {
+    return App.buildSharePointFieldSchema(definition);
+  }
+
+  function normalizeFieldType(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const lower = text.toLowerCase();
+    if (lower.includes('datetime')) return 'DateTime';
+    if (lower.includes('note')) return 'Note';
+    if (lower.includes('choice')) return 'Choice';
+    if (lower.includes('number')) return 'Number';
+    if (lower.includes('boolean')) return 'Boolean';
+    if (lower.includes('text')) return 'Text';
+    return text;
+  }
+
+  function buildWizardSpecs() {
+    const config = App.getStaticConfig();
+    const settings = App.normalizeSettings(state.settings || App.createDefaultSettings());
+    return [
+      {
+        key: 'settings',
+        label: 'רשימת הגדרות',
+        description: 'הגדרות הניהול וההעדפות השמורות של המערכת.',
+        preferredTitle: String(config.sharepoint.settingsListTitle || '').trim(),
+        fallbackTitle: 'AttendanceAppSettings',
+        ensureReady: async () => {
+          const listTitle = await App.resolveListTitle('wizard::settings', String(config.sharepoint.settingsListTitle || '').trim(), 'AttendanceAppSettings', 'Attendance app settings');
+          await App.ensureField(listTitle, 'JsonConfig', "<Field Type='Note' Name='JsonConfig' DisplayName='JsonConfig' NumLines='18' RichText='FALSE' AppendOnly='FALSE' />");
+          await App.ensureField(listTitle, 'UpdatedAt', "<Field Type='DateTime' Name='UpdatedAt' DisplayName='UpdatedAt' Format='DateTime' FriendlyDisplayFormat='Disabled' />");
+          await App.ensureField(listTitle, 'UpdatedBy', "<Field Type='Text' Name='UpdatedBy' DisplayName='UpdatedBy' MaxLength='255' />");
+          return listTitle;
+        },
+        requiredFields: [
+          { internalName: 'JsonConfig', label: 'JsonConfig', spType: 'Note' },
+          { internalName: 'UpdatedAt', label: 'UpdatedAt', spType: 'DateTime' },
+          { internalName: 'UpdatedBy', label: 'UpdatedBy', spType: 'Text' }
+        ]
+      },
+      {
+        key: 'source',
+        label: 'מאגר רשומות ראשי',
+        description: 'מאגר הבסיס שממנו אפשר לשכפל רשומות לתאריכי הנוכחות היומיים.',
+        preferredTitle: String(config.sharepoint.sourceListTitle || '').trim(),
+        fallbackTitle: 'AttendanceMainDb',
+        ensureReady: () => App.ensureSourceListReady([], config.workbook.columnCount),
+        requiredFields: [
+          { internalName: 'PersonKey', label: 'PersonKey', spType: 'Text' },
+          { internalName: 'ExcelRowNumber', label: 'ExcelRowNumber', spType: 'Number' },
+          { internalName: 'UnitName', label: 'UnitName', spType: 'Text' },
+          { internalName: 'SourceFileName', label: 'SourceFileName', spType: 'Text' },
+          { internalName: 'ImportedAt', label: 'ImportedAt', spType: 'DateTime' },
+          { internalName: 'ImportedByName', label: 'ImportedByName', spType: 'Text' },
+          { internalName: 'ImportedByLogin', label: 'ImportedByLogin', spType: 'Text' },
+          { internalName: 'JsonSnapshot', label: 'JsonSnapshot', spType: 'Note' }
+        ]
+      },
+      {
+        key: 'attendance',
+        label: 'רשימת נוכחות',
+        description: 'רשומת הנתונים היומית של מסך הנוכחות.',
+        preferredTitle: String(config.sharepoint.attendanceListTitle || '').trim(),
+        fallbackTitle: 'AttendanceDailyDb',
+        ensureReady: () => App.ensureAttendanceListReady([], config.workbook.columnCount),
+        requiredFields: [
+          { internalName: 'AttendanceDate', label: 'AttendanceDate', spType: 'DateTime' },
+          { internalName: 'DateKey', label: 'DateKey', spType: 'Text' },
+          { internalName: 'PersonKey', label: 'PersonKey', spType: 'Text' },
+          { internalName: 'ExcelRowNumber', label: 'ExcelRowNumber', spType: 'Number' },
+          { internalName: 'UnitName', label: 'UnitName', spType: 'Text' },
+          { internalName: 'EditedByName', label: 'EditedByName', spType: 'Text' },
+          { internalName: 'EditedByLogin', label: 'EditedByLogin', spType: 'Text' },
+          { internalName: 'EditedAt', label: 'EditedAt', spType: 'DateTime' },
+          { internalName: 'IsAdminEdit', label: 'IsAdminEdit', spType: 'Boolean' },
+          { internalName: 'WorkbookUrl', label: 'WorkbookUrl', spType: 'Note' },
+          { internalName: 'JsonSnapshot', label: 'JsonSnapshot', spType: 'Note' }
+        ]
+      },
+      {
+        key: 'chat',
+        label: 'רשימת צ׳אט',
+        description: 'הודעות חדרים ושיחות ישירות של המערכת.',
+        preferredTitle: App.resolveChatListTitle(settings),
+        fallbackTitle: 'AttendanceChatMessages',
+        ensureReady: () => App.ensureChatListReady(settings),
+        requiredFields: [
+          { internalName: 'ScopeKey', label: 'ScopeKey', spType: 'Text' },
+          { internalName: 'ScopeLabel', label: 'ScopeLabel', spType: 'Text' },
+          { internalName: 'ConversationType', label: 'ConversationType', spType: 'Text' },
+          { internalName: 'DateKey', label: 'DateKey', spType: 'Text' },
+          { internalName: 'GroupKey', label: 'GroupKey', spType: 'Text' },
+          { internalName: 'ParticipantA', label: 'ParticipantA', spType: 'Text' },
+          { internalName: 'ParticipantB', label: 'ParticipantB', spType: 'Text' },
+          { internalName: 'ParticipantLabel', label: 'ParticipantLabel', spType: 'Text' },
+          { internalName: 'MessageText', label: 'MessageText', spType: 'Note' },
+          { internalName: 'AuthorName', label: 'AuthorName', spType: 'Text' },
+          { internalName: 'AuthorEmail', label: 'AuthorEmail', spType: 'Text' },
+          { internalName: 'AuthorLogin', label: 'AuthorLogin', spType: 'Text' },
+          { internalName: 'RecipientName', label: 'RecipientName', spType: 'Text' },
+          { internalName: 'RecipientEmail', label: 'RecipientEmail', spType: 'Text' },
+          { internalName: 'RecipientLogin', label: 'RecipientLogin', spType: 'Text' }
+        ]
+      },
+      {
+        key: 'operations',
+        label: 'יומן מבצעים',
+        description: 'רשימת האירועים והטיפול התפעולי.',
+        preferredTitle: App.resolveOperationsLogListTitle(settings),
+        fallbackTitle: 'AttendanceOperationsLog',
+        ensureReady: async () => {
+          const listTitle = await App.resolveListTitle('wizard::operations', App.resolveOperationsLogListTitle(settings), 'AttendanceOperationsLog', 'Attendance operations log');
+          const requiredFields = [
+            { internalName: 'OperatorName', label: 'גורם מפעיל', spType: 'Text' },
+            { internalName: 'EventDetails', label: 'פירוט האירוע', spType: 'Note', rows: 4 },
+            { internalName: 'HandlingStatus', label: 'סטטוס טיפול', spType: 'Choice', options: OPERATIONS_STATUS_OPTIONS },
+            { internalName: 'AdditionalNotes', label: 'הערות נוספות', spType: 'Note', rows: 3 },
+            { internalName: 'StatusSince', label: 'סטטוס מאז', spType: 'DateTime' }
+          ];
+          for (let index = 0; index < requiredFields.length; index += 1) {
+            try {
+              await App.ensureField(listTitle, requiredFields[index].internalName, buildFieldSchema(requiredFields[index]));
+            } catch (error) {
+              if (typeof console !== 'undefined' && console.warn) {
+                console.warn(`Attendance wizard schema: failed to ensure ${requiredFields[index].internalName} on ${listTitle}`, error);
+              }
+            }
+          }
+          return listTitle;
+        },
+        requiredFields: [
+          { internalName: 'OperatorName', label: 'גורם מפעיל', spType: 'Text' },
+          { internalName: 'EventDetails', label: 'פירוט האירוע', spType: 'Note' },
+          { internalName: 'HandlingStatus', label: 'סטטוס טיפול', spType: 'Choice' },
+          { internalName: 'AdditionalNotes', label: 'הערות נוספות', spType: 'Note' },
+          { internalName: 'StatusSince', label: 'סטטוס מאז', spType: 'DateTime' }
+        ]
+      },
+      {
+        key: 'casualties',
+        label: 'נפגעים ורכוש',
+        description: 'רשימת נפגעים, רכוש, פינוי וסטטוס מענה.',
+        preferredTitle: App.resolveCasualtyListTitle(settings),
+        fallbackTitle: 'AttendanceCasualties',
+        ensureReady: async () => {
+          const listTitle = await App.resolveListTitle('wizard::casualties', App.resolveCasualtyListTitle(settings), 'AttendanceCasualties', 'Attendance casualties and property registry');
+          const requiredFields = [
+            { internalName: 'RecordType', label: 'סוג', spType: 'Choice', options: ['נפגע רכוש', 'נפגעים'] },
+            { internalName: 'ImpactDate', label: 'תאריך פגיעה', spType: 'DateTime', input: 'date' },
+            { internalName: 'PersonalNumber', label: 'מספר אישי', spType: 'Text' },
+            { internalName: 'RankText', label: 'דרגה', spType: 'Text' },
+            { internalName: 'FirstName', label: 'שם פרטי', spType: 'Text' },
+            { internalName: 'LastName', label: 'שם משפחה', spType: 'Text' },
+            { internalName: 'ServiceType', label: 'סוג שירות', spType: 'Text' },
+            { internalName: 'FamilyStatus', label: 'סטטוס משפחה', spType: 'Text' },
+            { internalName: 'Indications', label: 'אינדיקציות', spType: 'Note', rows: 3 },
+            { internalName: 'UnitName', label: 'יחידה', spType: 'Text' },
+            { internalName: 'Squadron', label: 'טייסת', spType: 'Text' },
+            { internalName: 'AddressText', label: 'כתובת', spType: 'Text' },
+            { internalName: 'PhoneNumber', label: 'טלפון', spType: 'Text' },
+            { internalName: 'ImpactType', label: 'סוג הפגיעה', spType: 'Text' },
+            { internalName: 'SeverityLevel', label: 'סיווג החומרה', spType: 'Text' },
+            { internalName: 'HousingOwned', label: 'בית בבעלות המשרה?', spType: 'Choice', options: YES_NO_OPTIONS },
+            { internalName: 'LivesAtHome', label: 'מתגורר בבית?', spType: 'Choice', options: YES_NO_OPTIONS },
+            { internalName: 'IsEvacuated', label: 'האם פונה?', spType: 'Choice', options: YES_NO_OPTIONS },
+            { internalName: 'EvacuationAddress', label: 'כתובת פינוי', spType: 'Text' },
+            { internalName: 'AdditionalNotes', label: 'הערות', spType: 'Note', rows: 3 },
+            { internalName: 'ResponseStatus', label: 'סטטוס מענה', spType: 'Text' }
+          ];
+          for (let index = 0; index < requiredFields.length; index += 1) {
+            try {
+              await App.ensureField(listTitle, requiredFields[index].internalName, buildFieldSchema(requiredFields[index]));
+            } catch (error) {
+              if (typeof console !== 'undefined' && console.warn) {
+                console.warn(`Attendance wizard schema: failed to ensure ${requiredFields[index].internalName} on ${listTitle}`, error);
+              }
+            }
+          }
+          return listTitle;
+        },
+        requiredFields: [
+          { internalName: 'RecordType', label: 'סוג', spType: 'Choice' },
+          { internalName: 'ImpactDate', label: 'תאריך פגיעה', spType: 'DateTime' },
+          { internalName: 'PersonalNumber', label: 'מספר אישי', spType: 'Text' },
+          { internalName: 'RankText', label: 'דרגה', spType: 'Text' },
+          { internalName: 'FirstName', label: 'שם פרטי', spType: 'Text' },
+          { internalName: 'LastName', label: 'שם משפחה', spType: 'Text' },
+          { internalName: 'ServiceType', label: 'סוג שירות', spType: 'Text' },
+          { internalName: 'FamilyStatus', label: 'סטטוס משפחה', spType: 'Text' },
+          { internalName: 'Indications', label: 'אינדיקציות', spType: 'Note' },
+          { internalName: 'UnitName', label: 'יחידה', spType: 'Text' },
+          { internalName: 'Squadron', label: 'טייסת', spType: 'Text' },
+          { internalName: 'AddressText', label: 'כתובת', spType: 'Text' },
+          { internalName: 'PhoneNumber', label: 'טלפון', spType: 'Text' },
+          { internalName: 'ImpactType', label: 'סוג הפגיעה', spType: 'Text' },
+          { internalName: 'SeverityLevel', label: 'סיווג החומרה', spType: 'Text' },
+          { internalName: 'HousingOwned', label: 'בית בבעלות המשרה?', spType: 'Choice' },
+          { internalName: 'LivesAtHome', label: 'מתגורר בבית?', spType: 'Choice' },
+          { internalName: 'IsEvacuated', label: 'האם פונה?', spType: 'Choice' },
+          { internalName: 'EvacuationAddress', label: 'כתובת פינוי', spType: 'Text' },
+          { internalName: 'AdditionalNotes', label: 'הערות', spType: 'Note' },
+          { internalName: 'ResponseStatus', label: 'סטטוס מענה', spType: 'Text' }
+        ]
+      }
+    ];
+  }
+
+  function renderSummary() {
+    const host = byId('connectionSummary');
+    if (!host) return;
+    const total = state.checks.length;
+    const okCount = state.checks.filter((item) => item.status === 'ok').length;
+    const issueCount = state.checks.filter((item) => item.status !== 'ok').length;
+    const displayName = App.getUserDisplayName(state.currentUser) || 'לא זוהה';
+    const settingsSource = state.settingsSource ? String(state.settingsSource) : 'לא ידוע';
+    host.innerHTML = [
+      {
+        label: 'אתר SharePoint',
+        value: state.siteBase || 'לא הוגדר',
+        detail: state.siteBase ? 'היעד הפעיל של ה-API והרשימות' : 'לא זוהה URL לאתר'
+      },
+      {
+        label: 'משתמש מחובר',
+        value: displayName,
+        detail: state.currentUser.login || state.currentUser.email || 'ללא זיהוי נוסף'
+      },
+      {
+        label: 'רשימות תקינות',
+        value: total ? `${okCount}/${total}` : '0/0',
+        detail: issueCount ? `${issueCount} דורשות טיפול` : 'כל הרשימות שנבדקו תקינות'
+      },
+      {
+        label: 'מקור הגדרות',
+        value: settingsSource,
+        detail: state.busy ? state.busyLabel || 'מעבד...' : 'הגדרות הפעילות ששימשו לבדיקה'
+      }
+    ].map((item) => `
+      <article class="wizard-summary-card">
+        <span>${App.escapeHtml(item.label)}</span>
+        <strong>${App.escapeHtml(String(item.value || '-'))}</strong>
+        <small>${App.escapeHtml(item.detail || '')}</small>
+      </article>
+    `).join('');
+  }
+
+  function renderImportSummary() {
+    const host = byId('sourceImportSummary');
+    if (!host) return;
+    const summary = state.importSummary && typeof state.importSummary === 'object'
+      ? state.importSummary
+      : { fileName: '', importedRows: 0, seededDates: 0, updatedAt: '', warning: '' };
+    const cards = [
+      {
+        label: 'מאגר יעד',
+        value: App.getStaticConfig().sharepoint.sourceListTitle || 'AttendanceMainDb',
+        detail: 'רשימת המקור הראשית ב-SharePoint'
+      },
+      {
+        label: 'קובץ אחרון',
+        value: summary.fileName || 'טרם יובא',
+        detail: summary.updatedAt || 'אפשר לטעון Excel, CSV או TXT'
+      },
+      {
+        label: 'רשומות שיובאו',
+        value: summary.importedRows ? App.formatNumber(summary.importedRows) : '0',
+        detail: summary.warning || 'הייבוא מחליף את מאגר המקור הראשי'
+      },
+      {
+        label: 'תאריכים שמולאו',
+        value: summary.seededDates ? App.formatNumber(summary.seededDates) : '0',
+        detail: 'רק תאריכים יומיים שעדיין ריקים'
+      }
+    ];
+    host.innerHTML = cards.map((item) => `
+      <article class="wizard-summary-card">
+        <span>${App.escapeHtml(item.label)}</span>
+        <strong>${App.escapeHtml(String(item.value || '-'))}</strong>
+        <small>${App.escapeHtml(item.detail || '')}</small>
+      </article>
+    `).join('');
+  }
+
+  function formatImportSnapshotTime(value) {
+    const date = value ? new Date(value) : null;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    return new Intl.DateTimeFormat('he-IL', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  }
+
+  async function loadSourceImportSnapshot() {
+    try {
+      const rows = await App.loadSourceRecords(App.getStaticConfig().workbook.columnCount);
+      if (!rows.length) {
+        state.importSummary = {
+          fileName: '',
+          importedRows: 0,
+          seededDates: 0,
+          updatedAt: '',
+          warning: ''
+        };
+        renderImportSummary();
+        return;
+      }
+      const latest = rows.slice().sort((left, right) => {
+        const leftTime = Date.parse(String(left && left.ImportedAt || '')) || 0;
+        const rightTime = Date.parse(String(right && right.ImportedAt || '')) || 0;
+        return rightTime - leftTime;
+      })[0] || null;
+      state.importSummary = {
+        fileName: latest && latest.SourceFileName ? String(latest.SourceFileName) : '',
+        importedRows: rows.length,
+        seededDates: state.importSummary.seededDates || 0,
+        updatedAt: formatImportSnapshotTime(latest && latest.ImportedAt ? latest.ImportedAt : ''),
+        warning: ''
+      };
+    } catch (error) {}
+    renderImportSummary();
+  }
+
+  function setSchemaStatus(message, kind) {
+    const el = byId('schemaEditorStatus');
+    state.schemaEditor.message = String(message || '');
+    if (!el) return;
+    el.className = `status${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  function renderConnectionsTabState() {
+    document.querySelectorAll('[data-connections-tab]').forEach((button) => {
+      const active = String(button.getAttribute('data-connections-tab') || '') === state.activeTab;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    document.querySelectorAll('[data-connections-panel]').forEach((panel) => {
+      const active = String(panel.getAttribute('data-connections-panel') || '') === state.activeTab;
+      panel.classList.toggle('hidden', !active);
+    });
+  }
+
+  function setConnectionsTab(tab) {
+    state.activeTab = String(tab || 'wizard') === 'schema' ? 'schema' : 'wizard';
+    renderConnectionsTabState();
+    if (state.activeTab === 'schema' && !state.schemaEditor.listTitle) {
+      loadSchemaEditorList().catch((error) => {
+        setSchemaStatus(String(error && error.message ? error.message : error), 'err');
+      });
+    }
+  }
+
+  function buildSchemaManagedTargets() {
+    return buildWizardSpecs().map((spec) => ({
+      value: `managed::${spec.key}`,
+      label: `${spec.label} • ${spec.preferredTitle || spec.fallbackTitle || spec.key}`,
+      key: spec.key
+    }));
+  }
+
+  function renderSchemaTargetOptions() {
+    const select = byId('schemaListSelect');
+    if (!(select instanceof HTMLSelectElement)) return;
+    const managed = buildSchemaManagedTargets();
+    const siteLists = Array.isArray(state.siteLists) ? state.siteLists : [];
+    const selectedValue = state.schemaEditor.targetValue
+      || (managed[0] && managed[0].value)
+      || '';
+    const managedHtml = managed.length
+      ? `<optgroup label="רשימות המערכת">${managed.map((item) => `<option value="${App.escapeHtml(item.value)}"${item.value === selectedValue ? ' selected' : ''}>${App.escapeHtml(item.label)}</option>`).join('')}</optgroup>`
+      : '';
+    const siteHtml = siteLists.length
+      ? `<optgroup label="רשימות קיימות באתר">${siteLists.map((item) => {
+          const value = `site::${item.title}`;
+          const suffix = item.itemCount ? ` • ${App.formatNumber(item.itemCount)} פריטים` : '';
+          return `<option value="${App.escapeHtml(value)}"${value === selectedValue ? ' selected' : ''}>${App.escapeHtml(item.title)}${App.escapeHtml(suffix)}</option>`;
+        }).join('')}</optgroup>`
+      : '';
+    select.innerHTML = managedHtml + siteHtml;
+    if (!select.value && managed[0]) {
+      select.value = managed[0].value;
+      state.schemaEditor.targetValue = managed[0].value;
+    }
+  }
+
+  function visibleSchemaFields() {
+    const fields = Array.isArray(state.schemaEditor.fields) ? state.schemaEditor.fields : [];
+    const showHidden = !!state.schemaEditor.showHidden;
+    return fields.filter((field) => {
+      if (showHidden) return true;
+      return !field.Hidden && !field.Sealed;
+    });
+  }
+
+  function renderSchemaSummary() {
+    const host = byId('schemaSummary');
+    if (!host) return;
+    const fields = Array.isArray(state.schemaEditor.fields) ? state.schemaEditor.fields : [];
+    const visible = visibleSchemaFields();
+    const hiddenCount = fields.filter((field) => field.Hidden || field.Sealed).length;
+    const cards = [
+      {
+        label: 'רשימה פעילה',
+        value: state.schemaEditor.listTitle || 'טרם נטענה',
+        detail: state.schemaEditor.listLabel || 'בחרו מהרשימות המנוהלות או מהאתר'
+      },
+      {
+        label: 'שדות מוצגים',
+        value: fields.length ? App.formatNumber(visible.length) : '0',
+        detail: fields.length ? `מתוך ${App.formatNumber(fields.length)} שדות ברשימה` : 'אין עדיין נתונים להצגה'
+      },
+      {
+        label: 'שדות מערכת',
+        value: fields.length ? App.formatNumber(hiddenCount) : '0',
+        detail: state.schemaEditor.showHidden ? 'מוצגים כעת בטבלה' : 'מוסתרים כברירת מחדל'
+      },
+      {
+        label: 'עודכן לאחרונה',
+        value: state.schemaEditor.lastLoadedAt || 'טרם עודכן',
+        detail: 'טעינת הסכמה האחרונה למסך העריכה'
+      }
+    ];
+    host.innerHTML = cards.map((item) => `
+      <article class="wizard-summary-card">
+        <span>${App.escapeHtml(item.label)}</span>
+        <strong>${App.escapeHtml(String(item.value || '-'))}</strong>
+        <small>${App.escapeHtml(item.detail || '')}</small>
+      </article>
+    `).join('');
+  }
+
+  function parseSchemaChoiceOptions(text) {
+    return String(text || '')
+      .split(/[,\n]+/)
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+  }
+
+  function readSchemaFieldDraft() {
+    const labelField = byId('schemaNewFieldLabel');
+    const internalField = byId('schemaNewFieldInternalName');
+    const typeField = byId('schemaNewFieldType');
+    const rowsField = byId('schemaNewFieldRows');
+    const optionsField = byId('schemaNewFieldOptions');
+    const label = String(labelField && 'value' in labelField ? labelField.value : '').trim();
+    const explicitInternal = String(internalField && 'value' in internalField ? internalField.value : '').trim();
+    const type = String(typeField && 'value' in typeField ? typeField.value : 'Text').trim() || 'Text';
+    const safeLabel = App.sanitizeSharePointFieldLabel(label || explicitInternal, 'Field');
+    const safeInternal = App.sanitizeSharePointFieldInternalName(explicitInternal || label, 'Field');
+    return {
+      label,
+      internalName: explicitInternal,
+      safeLabel,
+      safeInternal,
+      spType: type,
+      rows: Math.max(2, Number(rowsField && 'value' in rowsField ? rowsField.value : 4) || 4),
+      options: parseSchemaChoiceOptions(optionsField && 'value' in optionsField ? optionsField.value : '')
+    };
+  }
+
+  function renderSchemaFieldPreview() {
+    const host = byId('schemaNewFieldPreview');
+    if (!host) return;
+    const draft = readSchemaFieldDraft();
+    host.innerHTML = [
+      `כותרת בטוחה: <strong>${App.escapeHtml(draft.safeLabel || 'Field')}</strong>`,
+      `שם פנימי בטוח: <code>${App.escapeHtml(draft.safeInternal || 'Field')}</code>`,
+      `סוג: <strong>${App.escapeHtml(draft.spType)}</strong>`
+    ].join('<br>');
+  }
+
+  function renderSchemaFieldsTable() {
+    const host = byId('schemaFieldsTableBody');
+    if (!host) return;
+    const fields = visibleSchemaFields();
+    if (!state.schemaEditor.listTitle) {
+      host.innerHTML = '<tr><td colspan="5" class="schema-empty">בחרו רשימה כדי לראות את מבנה השדות שלה.</td></tr>';
+      return;
+    }
+    if (!fields.length) {
+      host.innerHTML = '<tr><td colspan="5" class="schema-empty">לא נמצאו שדות זמינים להצגה ברשימה שנבחרה.</td></tr>';
+      return;
+    }
+    host.innerHTML = fields.map((field) => {
+      const internalName = String(field && field.InternalName || '').trim();
+      const title = String(field && field.Title || '').trim();
+      const type = String(field && field.TypeAsString || '').trim() || 'Unknown';
+      const safeTitle = App.sanitizeSharePointFieldLabel(title || internalName, internalName);
+      const canEdit = !field.Sealed;
+      const tags = [
+        field.Hidden ? '<span class="schema-tag warn">מוסתר</span>' : '',
+        field.ReadOnlyField ? '<span class="schema-tag">קריאה בלבד</span>' : '',
+        field.Sealed ? '<span class="schema-tag warn">Sealed</span>' : '',
+        safeTitle !== title ? '<span class="schema-tag warn">מומלץ לנקות כותרת</span>' : ''
+      ].filter(Boolean).join('');
+      return `
+        <tr data-schema-field="${App.escapeHtml(internalName)}">
+          <td><code>${App.escapeHtml(internalName || '—')}</code></td>
+          <td><input type="text" data-schema-title-input="${App.escapeHtml(internalName)}" value="${App.escapeHtml(title)}"${canEdit ? '' : ' disabled'}></td>
+          <td>${App.escapeHtml(type)}</td>
+          <td><div class="schema-tags">${tags || '<span class="schema-tag">רגיל</span>'}</div></td>
+          <td>
+            <div class="schema-actions">
+              <button type="button" class="btn light" data-schema-action="save-title" data-schema-field="${App.escapeHtml(internalName)}"${canEdit ? '' : ' disabled'}>שמור כותרת</button>
+              <button type="button" class="btn light" data-schema-action="sanitize-title" data-schema-field="${App.escapeHtml(internalName)}"${canEdit ? '' : ' disabled'}>נקה תווים</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function renderSchemaEditor() {
+    const showHiddenField = byId('schemaShowHiddenFields');
+    if (showHiddenField instanceof HTMLInputElement) {
+      showHiddenField.checked = !!state.schemaEditor.showHidden;
+    }
+    renderConnectionsTabState();
+    renderSchemaTargetOptions();
+    renderSchemaSummary();
+    renderSchemaFieldPreview();
+    renderSchemaFieldsTable();
+  }
+
+  async function loadSchemaSiteLists() {
+    try {
+      state.siteLists = await App.loadSharePointLists();
+    } catch (error) {
+      state.siteLists = [];
+    }
+    renderSchemaEditor();
+  }
+
+  async function resolveSchemaEditorTarget() {
+    const customTitleField = byId('schemaCustomListTitle');
+    const customTitle = String(customTitleField && 'value' in customTitleField ? customTitleField.value : '').trim();
+    if (customTitle) {
+      const safeTitle = String(customTitle).trim();
+      const listTitle = await App.resolveListTitle(`schema-editor::custom::${safeTitle}`, safeTitle, safeTitle, 'Schema editor custom list');
+      return {
+        listTitle,
+        label: safeTitle,
+        targetValue: 'custom'
+      };
+    }
+    const select = byId('schemaListSelect');
+    const value = String(select && 'value' in select ? select.value : state.schemaEditor.targetValue || '').trim();
+    if (value.startsWith('managed::')) {
+      const specKey = value.split('::')[1] || '';
+      const spec = buildWizardSpecs().find((item) => item.key === specKey);
+      if (!spec) throw new Error('לא נמצאה רשימת מערכת מתאימה לעריכה.');
+      const listTitle = await spec.ensureReady();
+      return {
+        listTitle,
+        label: spec.label,
+        targetValue: value
+      };
+    }
+    if (value.startsWith('site::')) {
+      const listTitle = value.slice('site::'.length).trim();
+      if (!listTitle) throw new Error('יש לבחור רשימה תקינה.');
+      return {
+        listTitle,
+        label: listTitle,
+        targetValue: value
+      };
+    }
+    throw new Error('יש לבחור רשימה לעריכה.');
+  }
+
+  async function loadSchemaEditorList() {
+    setBusy(true, 'טוען מבנה רשימה...');
+    try {
+      const target = await resolveSchemaEditorTarget();
+      const fields = await App.getListFields(target.listTitle, true);
+      state.schemaEditor.listTitle = target.listTitle;
+      state.schemaEditor.listLabel = target.label;
+      state.schemaEditor.targetValue = target.targetValue;
+      state.schemaEditor.fields = Array.isArray(fields) ? fields.slice() : [];
+      state.schemaEditor.lastLoadedAt = formatImportSnapshotTime(new Date().toISOString());
+      renderSchemaEditor();
+      setSchemaStatus(`נטענו ${App.formatNumber(state.schemaEditor.fields.length)} שדות מהרשימה ${target.listTitle}.`, 'ok');
+    } catch (error) {
+      renderSchemaEditor();
+      setSchemaStatus(String(error && error.message ? error.message : error), 'err');
+      throw error;
+    } finally {
+      setBusy(false, '');
+    }
+  }
+
+  async function saveSchemaFieldTitle(internalName, sanitizeOnly) {
+    const safeInternal = String(internalName || '').trim();
+    const input = Array.from(document.querySelectorAll('[data-schema-title-input]')).find((field) => {
+      return String(field.getAttribute('data-schema-title-input') || '').trim() === safeInternal;
+    });
+    if (!(input instanceof HTMLInputElement) || !state.schemaEditor.listTitle) return;
+    const requestedTitle = sanitizeOnly
+      ? App.sanitizeSharePointFieldLabel(input.value || safeInternal, safeInternal)
+      : String(input.value || '').trim();
+    setBusy(true, 'מעדכן כותרת שדה...');
+    try {
+      const savedTitle = await App.updateFieldTitle(state.schemaEditor.listTitle, safeInternal, requestedTitle);
+      input.value = savedTitle;
+      await loadSchemaEditorList();
+      setSchemaStatus(`כותרת השדה ${safeInternal} עודכנה.`, 'ok');
+    } catch (error) {
+      setSchemaStatus(String(error && error.message ? error.message : error), 'err');
+    } finally {
+      setBusy(false, '');
+    }
+  }
+
+  function resetSchemaFieldForm() {
+    const defaults = {
+      schemaNewFieldLabel: '',
+      schemaNewFieldInternalName: '',
+      schemaNewFieldOptions: '',
+      schemaNewFieldRows: '4'
+    };
+    Object.keys(defaults).forEach((id) => {
+      const field = byId(id);
+      if (field && 'value' in field) field.value = defaults[id];
+    });
+    const typeField = byId('schemaNewFieldType');
+    if (typeField && 'value' in typeField) typeField.value = 'Text';
+    renderSchemaFieldPreview();
+  }
+
+  async function addSchemaField() {
+    if (!state.schemaEditor.listTitle) {
+      await loadSchemaEditorList();
+      if (!state.schemaEditor.listTitle) return;
+    }
+    const draft = readSchemaFieldDraft();
+    if (!draft.safeLabel || !draft.safeInternal) {
+      setSchemaStatus('יש להזין כותרת שדה או שם פנימי תקין.', 'warn');
+      return;
+    }
+    if (draft.spType === 'Choice' && !draft.options.length) {
+      setSchemaStatus('שדה מסוג Choice חייב לכלול לפחות אפשרות אחת.', 'warn');
+      return;
+    }
+    setBusy(true, 'מוסיף שדה חדש...');
+    try {
+      await App.ensureField(state.schemaEditor.listTitle, draft.safeInternal, App.buildSharePointFieldSchema({
+        internalName: draft.safeInternal,
+        label: draft.safeLabel,
+        spType: draft.spType,
+        rows: draft.rows,
+        options: draft.options
+      }));
+      await loadSchemaEditorList();
+      resetSchemaFieldForm();
+      setSchemaStatus(`השדה ${draft.safeInternal} נוסף או כבר קיים ברשימה.`, 'ok');
+    } catch (error) {
+      setSchemaStatus(String(error && error.message ? error.message : error), 'err');
+    } finally {
+      setBusy(false, '');
+    }
+  }
+
+  async function sanitizeAllSchemaFieldTitles() {
+    if (!state.schemaEditor.listTitle) {
+      setSchemaStatus('יש לטעון רשימה לפני ניקוי הכותרות.', 'warn');
+      return;
+    }
+    const candidates = (Array.isArray(state.schemaEditor.fields) ? state.schemaEditor.fields : [])
+      .filter((field) => !field.Sealed)
+      .map((field) => ({
+        internalName: String(field && field.InternalName || '').trim(),
+        currentTitle: String(field && field.Title || '').trim(),
+        nextTitle: App.sanitizeSharePointFieldLabel(String(field && field.Title || field && field.InternalName || '').trim(), String(field && field.InternalName || '').trim())
+      }))
+      .filter((field) => field.internalName && field.nextTitle && field.nextTitle !== field.currentTitle);
+    if (!candidates.length) {
+      setSchemaStatus('לא נמצאו כותרות עם תווים מיוחדים שדורשים ניקוי.', 'ok');
+      return;
+    }
+    setBusy(true, 'מנקה כותרות שדות...');
+    try {
+      for (let index = 0; index < candidates.length; index += 1) {
+        await App.updateFieldTitle(state.schemaEditor.listTitle, candidates[index].internalName, candidates[index].nextTitle);
+      }
+      await loadSchemaEditorList();
+      setSchemaStatus(`נוקו ${App.formatNumber(candidates.length)} כותרות שדה ברשימה.`, 'ok');
+    } catch (error) {
+      setSchemaStatus(String(error && error.message ? error.message : error), 'err');
+    } finally {
+      setBusy(false, '');
+    }
+  }
+
+  function renderChecks() {
+    const host = byId('connectionWizard');
+    if (!host) return;
+    if (!state.checks.length) {
+      host.innerHTML = '<div class="wizard-empty">לחצו על "בדוק הכל" כדי לראות את מצב הרשימות והשדות.</div>';
+      return;
+    }
+    host.innerHTML = state.checks.map((item) => {
+      const missingFields = Array.isArray(item.missingFields) ? item.missingFields : [];
+      const mismatchedFields = Array.isArray(item.mismatchedFields) ? item.mismatchedFields : [];
+      const missingHtml = missingFields.length
+        ? `<div class="wizard-list"><p>שדות חסרים</p><div class="wizard-chip-row">${missingFields.map((field) => `<span class="wizard-chip warn">${App.escapeHtml(field.label || field.internalName || '')}</span>`).join('')}</div></div>`
+        : '';
+      const mismatchHtml = mismatchedFields.length
+        ? `<div class="wizard-list"><p>שדות עם טיפוס לא תואם</p><div class="wizard-chip-row">${mismatchedFields.map((field) => `<span class="wizard-chip err">${App.escapeHtml(field.label || field.internalName || '')} | ${App.escapeHtml(field.actualType || '?')}</span>`).join('')}</div></div>`
+        : '';
+      return `
+        <article class="wizard-card" data-state="${App.escapeHtml(item.status || 'warn')}">
+          <div class="wizard-card-head">
+            <div class="wizard-copy">
+              <strong>${App.escapeHtml(item.label || item.key || 'רשימה')}</strong>
+              <p>${App.escapeHtml(item.message || item.description || '')}</p>
+            </div>
+            <span class="wizard-badge">${App.escapeHtml(item.badge || 'לבדיקה')}</span>
+          </div>
+          <div class="wizard-card-meta">
+            <span class="wizard-meta">${App.escapeHtml(item.listTitle || item.preferredTitle || item.fallbackTitle || 'ללא שם רשימה')}</span>
+            <span class="wizard-meta">${App.escapeHtml(`${App.formatNumber(Number(item.fieldCount || 0))} שדות שזוהו`)}</span>
+          </div>
+          ${missingHtml}
+          ${mismatchHtml}
+          <div class="wizard-card-actions">
+            <button type="button" class="btn light" data-wizard-check="${App.escapeHtml(item.key)}">בדוק מחדש</button>
+            <button type="button" class="btn primary" data-wizard-fix="${App.escapeHtml(item.key)}">תקן</button>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function updateBusyState() {
+    const checkButton = byId('checkConnectionsBtn');
+    const fixButton = byId('fixConnectionsBtn');
+    const importButton = byId('importSourceFileBtn');
+    const schemaLoadButton = byId('schemaLoadBtn');
+    const schemaSanitizeButton = byId('schemaSanitizeAllBtn');
+    const schemaAddButton = byId('schemaAddFieldBtn');
+    const schemaResetButton = byId('schemaResetFieldBtn');
+    if (checkButton instanceof HTMLButtonElement) checkButton.disabled = state.busy;
+    if (fixButton instanceof HTMLButtonElement) fixButton.disabled = state.busy;
+    if (importButton instanceof HTMLButtonElement) importButton.disabled = state.busy;
+    if (schemaLoadButton instanceof HTMLButtonElement) schemaLoadButton.disabled = state.busy;
+    if (schemaSanitizeButton instanceof HTMLButtonElement) schemaSanitizeButton.disabled = state.busy;
+    if (schemaAddButton instanceof HTMLButtonElement) schemaAddButton.disabled = state.busy;
+    if (schemaResetButton instanceof HTMLButtonElement) schemaResetButton.disabled = state.busy;
+    document.querySelectorAll('[data-wizard-check], [data-wizard-fix]').forEach((button) => {
+      if (button instanceof HTMLButtonElement) button.disabled = state.busy;
+    });
+    renderSummary();
+    renderImportSummary();
+    renderSchemaSummary();
+  }
+
+  function setBusy(flag, label) {
+    state.busy = !!flag;
+    state.busyLabel = flag ? String(label || 'מעבד...') : '';
+    updateBusyState();
+  }
+
+  async function inspectSpec(spec) {
+    const preferredTitle = String(spec.preferredTitle || '').trim();
+    const fallbackTitle = String(spec.fallbackTitle || '').trim();
+    const result = {
+      key: spec.key,
+      label: spec.label,
+      description: spec.description,
+      preferredTitle,
+      fallbackTitle,
+      listTitle: preferredTitle || fallbackTitle,
+      status: 'warn',
+      badge: 'לבדיקה',
+      message: 'בודק רשימה ושדות...',
+      fieldCount: 0,
+      missingFields: [],
+      mismatchedFields: []
+    };
+    try {
+      const listTitle = await App.resolveExistingListTitle(`wizard-check::${spec.key}`, preferredTitle, fallbackTitle);
+      if (!listTitle) {
+        result.status = 'err';
+        result.badge = 'חסרה';
+        result.message = 'הרשימה עדיין לא קיימת ב-SharePoint.';
+        return result;
+      }
+      result.listTitle = listTitle;
+      const fields = await App.getListFields(listTitle, true);
+      result.fieldCount = Array.isArray(fields) ? fields.length : 0;
+      const fieldMap = new Map();
+      (Array.isArray(fields) ? fields : []).forEach((field) => {
+        const internalName = String(field && field.InternalName || '').trim();
+        const title = String(field && field.Title || '').trim();
+        if (internalName) fieldMap.set(internalName, field);
+        if (title && !fieldMap.has(title)) fieldMap.set(title, field);
+      });
+      (Array.isArray(spec.requiredFields) ? spec.requiredFields : []).forEach((requiredField) => {
+        const currentField = fieldMap.get(String(requiredField.internalName || '').trim()) || null;
+        if (!currentField) {
+          result.missingFields.push(requiredField);
+          return;
+        }
+        const expectedType = normalizeFieldType(requiredField.spType);
+        const actualType = normalizeFieldType(currentField.TypeAsString);
+        if (expectedType && actualType && expectedType !== actualType) {
+          result.mismatchedFields.push({
+            ...requiredField,
+            actualType
+          });
+        }
+      });
+      if (!result.missingFields.length && !result.mismatchedFields.length) {
+        result.status = 'ok';
+        result.badge = 'תקין';
+        result.message = 'הרשימה קיימת וכל השדות הנדרשים זוהו.';
+        return result;
+      }
+      result.status = result.missingFields.length ? 'warn' : 'err';
+      result.badge = result.missingFields.length ? 'חסר שדות' : 'טיפוס שגוי';
+      const messageParts = [];
+      if (result.missingFields.length) messageParts.push(`חסרים ${App.formatNumber(result.missingFields.length)} שדות.`);
+      if (result.mismatchedFields.length) messageParts.push(`${App.formatNumber(result.mismatchedFields.length)} שדות קיימים עם טיפוס לא צפוי.`);
+      result.message = messageParts.join(' ');
+      return result;
+    } catch (error) {
+      result.status = 'err';
+      result.badge = 'שגיאה';
+      result.message = String(error && error.message ? error.message : error);
+      return result;
+    }
+  }
+
+  async function runCheckAll(options) {
+    const silent = !!(options && options.silent);
+    setBusy(true, 'בודק רשימות ושדות...');
+    try {
+      const specs = buildWizardSpecs();
+      const results = [];
+      for (let index = 0; index < specs.length; index += 1) {
+        results.push(await inspectSpec(specs[index]));
+      }
+      state.checks = results;
+      renderChecks();
+      renderSummary();
+      const issueCount = results.filter((item) => item.status !== 'ok').length;
+      if (!silent) {
+        setStatus(
+          issueCount
+            ? `הבדיקה הושלמה. נמצאו ${App.formatNumber(issueCount)} רשימות או סכמות שדורשות טיפול.`
+            : 'הבדיקה הושלמה. כל הרשימות והשדות התקינים זוהו בהצלחה.',
+          issueCount ? 'warn' : 'ok'
+        );
+      }
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'err');
+    } finally {
+      setBusy(false, '');
+    }
+  }
+
+  async function runFixForSpec(specKey) {
+    const spec = buildWizardSpecs().find((item) => item.key === specKey);
+    if (!spec) {
+      setStatus('לא נמצאה רשימה מתאימה לתיקון.', 'err');
+      return;
+    }
+    setBusy(true, `מתקן את ${spec.label}...`);
+    try {
+      const listTitle = await spec.ensureReady();
+      const nextResult = await inspectSpec(spec);
+      state.checks = state.checks
+        .filter((item) => item.key !== spec.key)
+        .concat(nextResult)
+        .sort((left, right) => buildWizardSpecs().findIndex((item) => item.key === left.key) - buildWizardSpecs().findIndex((item) => item.key === right.key));
+      renderChecks();
+      renderSummary();
+      if (nextResult.status === 'ok') {
+        setStatus(`הרשימה ${listTitle || spec.label} הותקנה או תוקנה בהצלחה.`, 'ok');
+      } else if (nextResult.mismatchedFields.length) {
+        setStatus(`הרשימה ${listTitle || spec.label} עודכנה חלקית. עדיין יש שדות עם טיפוס לא תואם שדורשים תיקון ידני.`, 'warn');
+      } else {
+        setStatus(`הרשימה ${listTitle || spec.label} עודכנה, אבל עדיין נדרש טיפול נוסף.`, 'warn');
+      }
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'err');
+    } finally {
+      setBusy(false, '');
+    }
+  }
+
+  async function runFixAll() {
+    const specs = buildWizardSpecs();
+    const failures = [];
+    setBusy(true, 'מתקין ומתקן את כל הרשימות...');
+    try {
+      for (let index = 0; index < specs.length; index += 1) {
+        try {
+          await specs[index].ensureReady();
+        } catch (error) {
+          failures.push({
+            label: specs[index].label,
+            message: String(error && error.message ? error.message : error)
+          });
+        }
+      }
+      await runCheckAll({ silent: true });
+      const unresolved = state.checks.filter((item) => item.status !== 'ok');
+      if (failures.length) {
+        setStatus(`תהליך התיקון הסתיים עם ${App.formatNumber(failures.length)} כשלים. ${failures[0].label}: ${failures[0].message}`, 'warn');
+      } else if (unresolved.length) {
+        setStatus(`תהליך התיקון הושלם, אבל נשארו ${App.formatNumber(unresolved.length)} פריטים לבדיקה ידנית. בדרך כלל זה אומר שדה קיים עם טיפוס SharePoint שונה מהמצופה.`, 'warn');
+      } else {
+        setStatus('כל הרשימות והשדות הותקנו או תוקנו בהצלחה.', 'ok');
+      }
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'err');
+    } finally {
+      setBusy(false, '');
+    }
+  }
+
+  async function importSourceFile(file) {
+    if (!(file instanceof File)) return;
+    setBusy(true, `מייבא ${file.name} למאגר הראשי...`);
+    try {
+      if (!state.currentUser.name && !state.currentUser.login && !state.currentUser.email) {
+        state.currentUser = await App.getCurrentUser();
+      }
+      const result = await App.importSourceRecordsFromFile(file, {
+        settings: state.settings,
+        currentUser: state.currentUser,
+        columnCount: App.getStaticConfig().workbook.columnCount,
+        isAdminEdit: true
+      });
+      state.settings = result.settings || state.settings;
+      state.settingsSource = String(result.settingsResult && result.settingsResult.source || state.settingsSource || 'sharepoint');
+      state.importSummary = {
+        fileName: result.fileName || file.name || '',
+        importedRows: Array.isArray(result.records) ? result.records.length : 0,
+        seededDates: Array.isArray(result.seededDates) ? result.seededDates.length : 0,
+        updatedAt: formatImportSnapshotTime(new Date().toISOString()),
+        warning: result.settingsResult && result.settingsResult.warning ? String(result.settingsResult.warning) : ''
+      };
+      renderConfig();
+      renderImportSummary();
+      await runCheckAll({ silent: true });
+      const summaryParts = [
+        `המאגר הראשי עודכן מ-${App.formatNumber(state.importSummary.importedRows)} רשומות.`,
+        state.importSummary.seededDates
+          ? `${App.formatNumber(state.importSummary.seededDates)} תאריכים ריקים מולאו מהמאגר הראשי`
+          : '',
+        state.importSummary.warning
+      ].filter(Boolean);
+      setStatus(summaryParts.join(' '), state.importSummary.warning ? 'warn' : 'ok');
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'err');
+    } finally {
+      const input = byId('importSourceFileInput');
+      if (input instanceof HTMLInputElement) input.value = '';
+      setBusy(false, '');
+    }
+  }
+
+  function renderConfig() {
+    const config = App.getStaticConfig();
+    const rows = [
+      ['\u05e7\u05d5\u05d1\u05e5 \u05e7\u05d5\u05e0\u05e4\u05d9\u05d2\u05d5\u05e8\u05e6\u05d9\u05d4', 'attendance.config.js'],
+      ['Site URL', config.sharepoint.siteUrl || '(\u05e0\u05d2\u05d6\u05e8 \u05d0\u05d5\u05d8\u05d5\u05de\u05d8\u05d9\u05ea \u05de\u05d4\u05e7\u05d9\u05e9\u05d5\u05e8)'],
+      ['Settings List', config.sharepoint.settingsListTitle],
+      ['Settings Item', config.sharepoint.settingsItemTitle],
+      ['Source List', config.sharepoint.sourceListTitle || 'AttendanceMainDb'],
+      ['Attendance List', config.sharepoint.attendanceListTitle],
+      ['Chat List', config.sharepoint.chatListTitle || 'AttendanceChatMessages'],
+      ['Operations List', config.sharepoint.operationsLogListTitle || 'AttendanceOperationsLog'],
+      ['Casualty List', config.sharepoint.casualtyListTitle || 'AttendanceCasualties'],
+      ['Auto Provision', config.sharepoint.autoProvisionLists ? 'Enabled' : 'Disabled'],
+      ['Column Count', String(config.workbook.columnCount || 16)],
+      ['Settings Source', state.settingsSource || 'לא ידוע']
+    ];
+    byId('configTable').innerHTML = rows.map(([label, value]) => {
+      return `<tr><th>${App.escapeHtml(label)}</th><td>${App.escapeHtml(value)}</td></tr>`;
+    }).join('');
+  }
+
+  function bindEvents() {
+    const tabs = byId('connectionsTabs');
+    const checkButton = byId('checkConnectionsBtn');
+    const fixButton = byId('fixConnectionsBtn');
+    const importButton = byId('importSourceFileBtn');
+    const importInput = byId('importSourceFileInput');
+    const schemaLoadButton = byId('schemaLoadBtn');
+    const schemaSanitizeButton = byId('schemaSanitizeAllBtn');
+    const schemaAddButton = byId('schemaAddFieldBtn');
+    const schemaResetButton = byId('schemaResetFieldBtn');
+    const schemaListSelect = byId('schemaListSelect');
+    const schemaCustomListTitle = byId('schemaCustomListTitle');
+    const schemaShowHiddenFields = byId('schemaShowHiddenFields');
+    const schemaFieldsTable = byId('schemaFieldsTableBody');
+    if (tabs instanceof HTMLElement) {
+      tabs.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const button = target.closest('[data-connections-tab]');
+        if (!(button instanceof HTMLButtonElement)) return;
+        setConnectionsTab(String(button.getAttribute('data-connections-tab') || 'wizard'));
+      });
+    }
+    if (checkButton instanceof HTMLButtonElement) {
+      checkButton.addEventListener('click', () => {
+        runCheckAll();
+      });
+    }
+    if (fixButton instanceof HTMLButtonElement) {
+      fixButton.addEventListener('click', () => {
+        runFixAll();
+      });
+    }
+    if (importButton instanceof HTMLButtonElement) {
+      importButton.addEventListener('click', () => {
+        if (importInput instanceof HTMLInputElement) importInput.click();
+      });
+    }
+    if (importInput instanceof HTMLInputElement) {
+      importInput.addEventListener('change', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) || !target.files || !target.files[0]) return;
+        importSourceFile(target.files[0]);
+      });
+    }
+    if (schemaLoadButton instanceof HTMLButtonElement) {
+      schemaLoadButton.addEventListener('click', () => {
+        loadSchemaEditorList().catch(() => {});
+      });
+    }
+    if (schemaSanitizeButton instanceof HTMLButtonElement) {
+      schemaSanitizeButton.addEventListener('click', () => {
+        sanitizeAllSchemaFieldTitles();
+      });
+    }
+    if (schemaAddButton instanceof HTMLButtonElement) {
+      schemaAddButton.addEventListener('click', () => {
+        addSchemaField();
+      });
+    }
+    if (schemaResetButton instanceof HTMLButtonElement) {
+      schemaResetButton.addEventListener('click', () => {
+        resetSchemaFieldForm();
+        setSchemaStatus('טופס הוספת השדה אופס.', '');
+      });
+    }
+    if (schemaListSelect instanceof HTMLSelectElement) {
+      schemaListSelect.addEventListener('change', () => {
+        state.schemaEditor.targetValue = String(schemaListSelect.value || '').trim();
+        if (schemaCustomListTitle instanceof HTMLInputElement) schemaCustomListTitle.value = '';
+        renderSchemaEditor();
+      });
+    }
+    if (schemaCustomListTitle instanceof HTMLInputElement) {
+      schemaCustomListTitle.addEventListener('input', () => {
+        renderSchemaEditor();
+      });
+      schemaCustomListTitle.addEventListener('keydown', (event) => {
+        if (!(event instanceof KeyboardEvent) || event.key !== 'Enter') return;
+        event.preventDefault();
+        loadSchemaEditorList().catch(() => {});
+      });
+    }
+    if (schemaShowHiddenFields instanceof HTMLInputElement) {
+      schemaShowHiddenFields.addEventListener('change', () => {
+        state.schemaEditor.showHidden = !!schemaShowHiddenFields.checked;
+        renderSchemaFieldsTable();
+        renderSchemaSummary();
+      });
+    }
+    ['schemaNewFieldLabel', 'schemaNewFieldInternalName', 'schemaNewFieldType', 'schemaNewFieldRows', 'schemaNewFieldOptions'].forEach((id) => {
+      const field = byId(id);
+      if (!(field instanceof HTMLElement)) return;
+      field.addEventListener('input', () => {
+        renderSchemaFieldPreview();
+      });
+      field.addEventListener('change', () => {
+        renderSchemaFieldPreview();
+      });
+    });
+    if (schemaFieldsTable instanceof HTMLElement) {
+      schemaFieldsTable.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const actionButton = target.closest('[data-schema-action][data-schema-field]');
+        if (!(actionButton instanceof HTMLButtonElement)) return;
+        const action = String(actionButton.getAttribute('data-schema-action') || '').trim();
+        const fieldName = String(actionButton.getAttribute('data-schema-field') || '').trim();
+        if (!fieldName) return;
+        if (action === 'save-title') {
+          saveSchemaFieldTitle(fieldName, false);
+          return;
+        }
+        if (action === 'sanitize-title') {
+          saveSchemaFieldTitle(fieldName, true);
+        }
+      });
+    }
+    const wizard = byId('connectionWizard');
+    if (wizard instanceof HTMLElement) {
+      wizard.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const checkTarget = target.closest('[data-wizard-check]');
+        if (checkTarget instanceof HTMLButtonElement) {
+          const spec = buildWizardSpecs().find((item) => item.key === String(checkTarget.dataset.wizardCheck || '').trim());
+          if (!spec) return;
+          setBusy(true, `בודק את ${spec.label}...`);
+          inspectSpec(spec).then((result) => {
+            state.checks = state.checks
+              .filter((item) => item.key !== result.key)
+              .concat(result)
+              .sort((left, right) => buildWizardSpecs().findIndex((item) => item.key === left.key) - buildWizardSpecs().findIndex((item) => item.key === right.key));
+            renderChecks();
+            renderSummary();
+            setStatus(`הבדיקה של ${spec.label} הושלמה.`, result.status === 'ok' ? 'ok' : 'warn');
+          }).catch((error) => {
+            setStatus(String(error && error.message ? error.message : error), 'err');
+          }).finally(() => {
+            setBusy(false, '');
+          });
+          return;
+        }
+        const fixTarget = target.closest('[data-wizard-fix]');
+        if (fixTarget instanceof HTMLButtonElement) {
+          runFixForSpec(String(fixTarget.dataset.wizardFix || '').trim());
+        }
+      });
+    }
+  }
+
+  async function loadSettingsContext() {
+    state.siteBase = String(App.getSiteBaseUrl() || '').trim();
+    try {
+      const result = await App.loadManagementSettings();
+      state.settings = result && result.settings ? result.settings : App.createDefaultSettings();
+      state.settingsSource = String(result && result.source || '').trim();
+      renderConfig();
+      if (result && result.warning) {
+        setStatus(result.warning, 'warn');
+      }
+    } catch (error) {
+      state.settings = App.createDefaultSettings();
+      state.settingsSource = 'fallback';
+      renderConfig();
+      setStatus(String(error && error.message ? error.message : error), 'warn');
+    }
+    await Promise.all([
+      loadSourceImportSnapshot(),
+      loadSchemaSiteLists()
+    ]);
+    renderSchemaEditor();
+    renderImportSummary();
+  }
+
+  async function init() {
+    App.initShellSidebar();
+    renderSidebarIdentity();
+    renderSummary();
+    renderImportSummary();
+    renderSchemaEditor();
+    renderChecks();
+    bindEvents();
+    await Promise.all([
+      hydrateSidebarIdentity(),
+      loadSettingsContext()
+    ]);
+    renderSidebarIdentity();
+    renderSummary();
+    await runCheckAll({ silent: true });
+    if (!state.checks.some((item) => item.status !== 'ok')) {
+      setStatus('כל רשימות SharePoint והשדות הנדרשים זמינים ומוכנים לעבודה.', 'ok');
+    } else {
+      setStatus('זוהו רשימות או שדות שדורשים התקנה או תיקון. אפשר להשתמש בכפתור "התקן או תקן הכל".', 'warn');
+    }
+  }
+
+  init();
+})();

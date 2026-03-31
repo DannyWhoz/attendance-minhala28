@@ -1,0 +1,618 @@
+==4234329534=fsdfsd
+(() => {
+  'use strict';
+
+  if (!document.body) return;
+  if (String(document.body.dataset.page || '').trim() !== 'chat') return;
+  const App = window.AttendanceApp;
+  if (!App) return;
+  window.AttendanceChatPageV2 = true;
+
+  const POLL_MS = 15000;
+  const MAX_CONTACTS = 12;
+  const state = {
+    settings: App.createDefaultSettings(),
+    selection: App.loadSelection(),
+    currentUser: { name: '', email: '', login: '' },
+    currentRoom: null,
+    customRooms: [],
+    activeRoomKey: '',
+    rooms: [],
+    seedMessages: [],
+    contacts: [],
+    messages: [],
+    searchText: '',
+    sending: false,
+    queuedRoomKey: '',
+    refreshTimer: 0,
+    refreshToken: 0
+  };
+
+  const byId = (id) => document.getElementById(id);
+  const norm = (value) => String(value || '').trim().toLowerCase();
+  const currentId = () => App.getPrimaryChatIdentity(state.currentUser);
+  const msgUserId = (name, email, login) => App.getPrimaryChatIdentity({ name, email, login });
+
+  function formatTime(value) {
+    const date = value instanceof Date ? value : new Date(value || Date.now());
+    return new Intl.DateTimeFormat('he-IL', { hour: '2-digit', minute: '2-digit' }).format(date);
+  }
+
+  function formatDayDivider(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return 'ללא תאריך';
+    const today = new Date();
+    if (date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() && date.getDate() === today.getDate()) return 'היום';
+    return new Intl.DateTimeFormat('he-IL', { day: 'numeric', month: 'long' }).format(date);
+  }
+
+  function buildCurrentRoom() {
+    return App.buildSelectionChatScope(state.selection, state.settings);
+  }
+
+  function roomMetaFromScope(scopeKey, groupKey) {
+    if (String(groupKey || '').trim().startsWith('custom:')) return 'חדר צוות';
+    if (String(scopeKey || '').trim() === 'room-admin-all') return 'ערוץ מערכת';
+    if (String(scopeKey || '').trim() === 'room-general') return 'ערוץ כללי';
+    if (/^room-category-/i.test(String(scopeKey || '').trim())) return 'ערוץ קטגוריה';
+    if (/^room-multi-/i.test(String(scopeKey || '').trim())) return 'צ׳אט קבוצות משותף';
+    return 'צ׳אט קבוצה';
+  }
+
+  function roomNoticeFromScope(scopeKey, groupKey) {
+    if (String(groupKey || '').trim().startsWith('custom:')) return 'חדר צ׳אט קבוע שיצר מנהל המערכת.';
+    if (String(scopeKey || '').trim() === 'room-admin-all') return 'ערוץ משותף לכלל היחידות במערכת.';
+    if (String(scopeKey || '').trim() === 'room-general') return 'ערוץ כללי לכלל המשתמשים.';
+    if (/^room-category-/i.test(String(scopeKey || '').trim())) return 'ערוץ לפי קטגוריית קבוצות.';
+    if (/^room-multi-/i.test(String(scopeKey || '').trim())) return 'שיחה משותפת לכמה קבוצות.';
+    return 'שיחת קבוצה שנשמרה ב-SharePoint.';
+  }
+
+  function normalizeMessage(row) {
+    const createdAt = row && row.Created ? new Date(row.Created) : null;
+    return {
+      id: Number(row && row.Id || 0),
+      scopeKey: String(row && row.ScopeKey || '').trim(),
+      scopeLabel: String(row && row.ScopeLabel || row && row.Title || '').trim(),
+      conversationType: String(row && row.ConversationType || '').trim().toLowerCase() === 'direct' ? 'direct' : 'room',
+      dateKey: App.normalizeDateKey(row && row.DateKey || ''),
+      groupKey: String(row && row.GroupKey || '').trim(),
+      participantA: norm(row && row.ParticipantA || ''),
+      participantB: norm(row && row.ParticipantB || ''),
+      participantLabel: String(row && row.ParticipantLabel || '').trim(),
+      messageText: String(row && row.MessageText || '').trim(),
+      authorName: String(row && row.AuthorName || '').trim(),
+      authorEmail: String(row && row.AuthorEmail || '').trim(),
+      authorLogin: String(row && row.AuthorLogin || '').trim(),
+      recipientName: String(row && row.RecipientName || '').trim(),
+      recipientEmail: String(row && row.RecipientEmail || '').trim(),
+      recipientLogin: String(row && row.RecipientLogin || '').trim(),
+      createdAt: createdAt instanceof Date && !Number.isNaN(createdAt.getTime()) ? createdAt : null
+    };
+  }
+
+  function isOwnMessage(message) {
+    const selfId = currentId();
+    const authorId = msgUserId(message.authorName, message.authorEmail, message.authorLogin);
+    if (selfId && authorId) return selfId === authorId;
+    const keys = new Set([state.currentUser.email, state.currentUser.login, state.currentUser.name].map(norm).filter(Boolean));
+    return keys.has(norm(message.authorEmail)) || keys.has(norm(message.authorLogin)) || keys.has(norm(message.authorName));
+  }
+
+  function peerFromDirect(message) {
+    const selfId = currentId();
+    const author = { name: message.authorName, email: message.authorEmail, login: message.authorLogin };
+    const recipient = { name: message.recipientName, email: message.recipientEmail, login: message.recipientLogin };
+    const authorId = msgUserId(author.name, author.email, author.login);
+    const recipientId = msgUserId(recipient.name, recipient.email, recipient.login);
+    if (selfId && authorId === selfId && recipientId) return { ...recipient, identity: recipientId };
+    if (selfId && recipientId === selfId && authorId) return { ...author, identity: authorId };
+    if (recipientId) return { ...recipient, identity: recipientId };
+    if (authorId) return { ...author, identity: authorId };
+    return null;
+  }
+
+  function buildDirectRoom(peer) {
+    if (!peer || !peer.identity) return null;
+    const room = App.buildDirectChatScope(state.currentUser, peer);
+    if (!room) return null;
+    return {
+      ...room,
+      isDirect: true,
+      isContext: false,
+      isCustom: false,
+      conversationType: 'direct',
+      peerIdentity: peer.identity,
+      recipientName: room.recipientName || App.getUserDisplayName(peer) || '',
+      recipientEmail: room.recipientEmail || String(peer.email || '').trim(),
+      recipientLogin: room.recipientLogin || String(peer.login || '').trim(),
+      lastMessageText: '',
+      lastCreatedAt: null
+    };
+  }
+
+  function roomFromMessage(message) {
+    if (message.conversationType === 'direct') {
+      const peer = peerFromDirect(message);
+      const room = buildDirectRoom(peer);
+      if (!room) return null;
+      return {
+        ...room,
+        scopeKey: message.scopeKey || room.scopeKey,
+        scopeLabel: message.scopeLabel || room.scopeLabel,
+        participantA: message.participantA || room.participantA,
+        participantB: message.participantB || room.participantB,
+        participantLabel: message.participantLabel || room.participantLabel || ''
+      };
+    }
+
+    if (!App.isManagedChatRoomScope(message.scopeKey, state.settings)) return null;
+    const customRoom = state.customRooms.find((room) => room.scopeKey === message.scopeKey);
+    if (customRoom) {
+      return {
+        ...customRoom,
+        scopeLabel: message.scopeLabel || customRoom.scopeLabel,
+        roomTitle: customRoom.roomTitle || message.scopeLabel || customRoom.scopeKey
+      };
+    }
+
+    return {
+      scopeKey: message.scopeKey,
+      scopeLabel: message.scopeLabel || message.scopeKey,
+      roomTitle: message.scopeLabel || message.scopeKey,
+      roomMeta: roomMetaFromScope(message.scopeKey, message.groupKey),
+      notice: roomNoticeFromScope(message.scopeKey, message.groupKey),
+      dateKey: '',
+      groupKey: message.groupKey,
+      isDirect: false,
+      isContext: false,
+      isCustom: false,
+      conversationType: 'room',
+      lastMessageText: '',
+      lastCreatedAt: null
+    };
+  }
+
+  function buildRooms(messages) {
+    const map = new Map();
+    if (state.currentRoom) map.set(state.currentRoom.scopeKey, { ...state.currentRoom });
+    state.customRooms.forEach((room) => {
+      if (!room || !room.scopeKey) return;
+      map.set(room.scopeKey, { ...room });
+    });
+
+    (Array.isArray(messages) ? messages : []).forEach((message) => {
+      if (!message || !message.scopeKey) return;
+      const room = roomFromMessage(message);
+      if (!room) return;
+      const existing = map.get(room.scopeKey) || room;
+      map.set(room.scopeKey, {
+        ...existing,
+        ...room,
+        roomTitle: existing.isContext && !room.isDirect ? existing.roomTitle : (room.roomTitle || existing.roomTitle || room.scopeKey),
+        roomMeta: existing.isContext && !room.isDirect ? existing.roomMeta : (room.roomMeta || existing.roomMeta || ''),
+        notice: existing.isContext && !room.isDirect ? existing.notice : (room.notice || existing.notice || ''),
+        dateKey: room.dateKey || existing.dateKey || '',
+        groupKey: room.groupKey || existing.groupKey || '',
+        lastMessageText: message.messageText || existing.lastMessageText || '',
+        lastCreatedAt: message.createdAt || existing.lastCreatedAt || null
+      });
+    });
+
+    return Array.from(map.values()).sort((left, right) => {
+      if (left.scopeKey === state.activeRoomKey) return -1;
+      if (right.scopeKey === state.activeRoomKey) return 1;
+      if (left.isContext && !right.isContext) return -1;
+      if (right.isContext && !left.isContext) return 1;
+      if (left.isCustom && !right.isCustom) return -1;
+      if (right.isCustom && !left.isCustom) return 1;
+      const leftStamp = left.lastCreatedAt instanceof Date ? left.lastCreatedAt.getTime() : 0;
+      const rightStamp = right.lastCreatedAt instanceof Date ? right.lastCreatedAt.getTime() : 0;
+      if (leftStamp !== rightStamp) return rightStamp - leftStamp;
+      return String(left.roomTitle || '').localeCompare(String(right.roomTitle || ''), 'he', { numeric: true, sensitivity: 'base' });
+    });
+  }
+
+  function collectContacts(messages) {
+    const map = new Map();
+    const selfId = currentId();
+
+    function put(user, meta) {
+      const identity = App.getPrimaryChatIdentity(user);
+      if (!identity || identity === selfId) return;
+      const previous = map.get(identity) || {
+        identity,
+        name: App.getUserDisplayName(user) || 'משתמש',
+        email: String(user.email || '').trim(),
+        login: String(user.login || '').trim(),
+        hint: 'משתמש פעיל בצ׳אט',
+        lastCreatedAt: null
+      };
+      map.set(identity, {
+        ...previous,
+        name: App.getUserDisplayName(user) || previous.name,
+        hint: meta && meta.hint ? meta.hint : previous.hint,
+        lastCreatedAt: meta && meta.createdAt ? meta.createdAt : previous.lastCreatedAt
+      });
+    }
+
+    (Array.isArray(messages) ? messages : []).forEach((message) => {
+      if (!message || !message.scopeKey) return;
+      if (message.conversationType === 'direct') {
+        const peer = peerFromDirect(message);
+        if (peer) put(peer, { createdAt: message.createdAt, hint: 'שיחה ישירה' });
+      } else {
+        put(
+          { name: message.authorName, email: message.authorEmail, login: message.authorLogin },
+          { createdAt: message.createdAt, hint: message.scopeLabel || 'השתתף בחדר צוות' }
+        );
+      }
+    });
+
+    return Array.from(map.values()).sort((left, right) => {
+      const leftStamp = left.lastCreatedAt instanceof Date ? left.lastCreatedAt.getTime() : 0;
+      const rightStamp = right.lastCreatedAt instanceof Date ? right.lastCreatedAt.getTime() : 0;
+      if (leftStamp !== rightStamp) return rightStamp - leftStamp;
+      return String(left.name || '').localeCompare(String(right.name || ''), 'he', { numeric: true, sensitivity: 'base' });
+    }).slice(0, MAX_CONTACTS);
+  }
+
+  function activeRoom() {
+    return state.rooms.find((room) => room.scopeKey === state.activeRoomKey) || state.currentRoom;
+  }
+
+  function ensureRoom(room) {
+    if (!room) return null;
+    const existing = state.rooms.find((item) => item.scopeKey === room.scopeKey);
+    if (existing) return existing;
+    state.rooms = [room, ...state.rooms.filter((item) => item.scopeKey !== room.scopeKey)];
+    return room;
+  }
+
+  function renderSidebarIdentity() {
+    const adminItems = document.querySelectorAll('[data-admin-sidebar-only]');
+    adminItems.forEach((item) => item.classList.toggle('hidden', !state.selection.adminMode));
+    const displayName = App.getUserDisplayName(state.currentUser);
+    const avatarText = App.getUserAvatarText(state.currentUser, state.selection.adminMode ? 'AD' : 'OP');
+    const title = displayName || (state.selection.adminMode ? 'מנהל' : 'מפעיל');
+    const subtitle = activeRoom() && activeRoom().isDirect ? 'שיחה ישירה' : (state.selection.adminMode ? 'מנהל' : 'צ׳אט');
+    if (byId('chatSidebarRailAvatar')) byId('chatSidebarRailAvatar').textContent = avatarText;
+    if (byId('chatSidebarAvatar')) byId('chatSidebarAvatar').textContent = avatarText;
+    if (byId('chatSidebarTitle')) byId('chatSidebarTitle').textContent = title;
+    if (byId('chatSidebarSubtitle')) byId('chatSidebarSubtitle').textContent = subtitle;
+  }
+
+  function setStatus(message, kind) {
+    const el = byId('chatStatus');
+    if (!el) return;
+    el.className = `chat-mini-status${kind ? ` ${kind}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  function renderHeader() {
+    const room = activeRoom();
+    if (!room) return;
+    if (byId('chatRoomScope')) {
+      byId('chatRoomScope').textContent = room.isDirect
+        ? 'שיחה ישירה'
+        : room.isCustom
+          ? 'חדר קבוע'
+          : room.isContext
+            ? 'קבוצה פעילה'
+            : (room.roomMeta || 'חדר');
+    }
+    if (byId('chatRoomTitle')) byId('chatRoomTitle').textContent = room.roomTitle || room.scopeLabel || 'חדר';
+    if (byId('chatRoomMeta')) {
+      byId('chatRoomMeta').textContent = room.isDirect
+        ? `שיחה פרטית${room.recipientName ? ` עם ${room.recipientName}` : ''}`
+        : (room.roomMeta || 'ללא פרטי הקשר');
+    }
+    if (byId('chatContextNote')) {
+      byId('chatContextNote').textContent = room.notice || 'השיחה הזו משויכת להקשר הפעיל.';
+    }
+    if (byId('chatNavbarTitle')) byId('chatNavbarTitle').textContent = room.roomTitle || 'צ׳אט';
+    renderSidebarIdentity();
+  }
+
+  function renderContacts() {
+    const section = byId('chatContactSection');
+    const host = byId('chatContactList');
+    if (!section || !host) return;
+    const contacts = state.contacts.slice(0, MAX_CONTACTS);
+    section.classList.toggle('hidden', !contacts.length);
+    host.innerHTML = contacts.map((contact) => `
+      <button type="button" class="chat-contact" data-contact-key="${App.escapeHtml(contact.identity)}" title="${App.escapeHtml(contact.name)}">
+        <span class="chat-contact-avatar">${App.escapeHtml(App.getUserAvatarText(contact, 'DM'))}</span>
+        <span class="chat-contact-copy">
+          <strong>${App.escapeHtml(contact.name || 'משתמש')}</strong>
+          <small>${App.escapeHtml(contact.hint || 'שיחה ישירה')}</small>
+        </span>
+      </button>
+    `).join('');
+  }
+
+  function renderRooms() {
+    const host = byId('chatRoomList');
+    if (!host) return;
+    const query = App.normalizeSearchText(state.searchText || '');
+    const rooms = state.rooms.filter((room) => !query || App.normalizeSearchText([room.roomTitle, room.scopeLabel, room.lastMessageText, room.roomMeta].join(' ')).includes(query));
+    if (!rooms.length) {
+      host.innerHTML = '<div class="chat-empty"><div><strong>לא נמצאו שיחות</strong><p>נסו מונח חיפוש אחר או פתחו שיחה חדשה מתוך הרשימה הפעילה.</p></div></div>';
+      return;
+    }
+
+    host.innerHTML = rooms.map((room) => {
+      const active = room.scopeKey === state.activeRoomKey ? ' active' : '';
+      const direct = room.isDirect ? ' direct' : '';
+      const time = room.lastCreatedAt ? formatTime(room.lastCreatedAt) : '';
+      const meta = room.isDirect
+        ? 'שיחה ישירה'
+        : room.isCustom
+          ? (room.roomMeta || 'חדר קבוע')
+          : (room.roomMeta || room.scopeLabel || '');
+      const snippet = room.lastMessageText || (room.isDirect ? 'עוד לא נשלחה הודעה בשיחה הישירה הזו.' : 'עדיין אין הודעות בשיחה הזו.');
+      return `
+        <button type="button" class="chat-room${active}${direct}" data-room-key="${App.escapeHtml(room.scopeKey)}">
+          <div class="chat-room-line">
+            <strong class="chat-room-title">${App.escapeHtml(room.roomTitle || room.scopeLabel || 'חדר')}</strong>
+            <span class="chat-room-time">${App.escapeHtml(time)}</span>
+          </div>
+          <span class="chat-room-meta">${App.escapeHtml(meta)}</span>
+          <p class="chat-room-snippet">${App.escapeHtml(snippet)}</p>
+        </button>
+      `;
+    }).join('');
+  }
+
+  function scrollMessages(forceScroll) {
+    const host = byId('chatMessages');
+    if (!host) return;
+    const distance = host.scrollHeight - host.clientHeight - host.scrollTop;
+    if (forceScroll || distance < 140) host.scrollTop = host.scrollHeight;
+  }
+
+  function renderMessages(forceScroll) {
+    const host = byId('chatMessages');
+    const room = activeRoom();
+    if (!host) return;
+    if (!room) {
+      host.innerHTML = '<div class="chat-empty"><div><strong>אין שיחה פעילה</strong><p>בחרו קבוצה, עברו לחדר קבוע או פתחו שיחה ישירה.</p></div></div>';
+      return;
+    }
+    if (!state.messages.length) {
+      const line = room.isDirect
+        ? `עדיין אין הודעות עם ${room.roomTitle || 'המשתמש הזה'}. אפשר להתחיל עכשיו.`
+        : `עדיין אין הודעות ב-${room.roomTitle || room.scopeLabel || 'השיחה הזו'}. אפשר לשלוח הודעה ראשונה עכשיו.`;
+      host.innerHTML = `<div class="chat-empty"><div><strong>${room.isDirect ? 'השיחה הישירה מוכנה' : 'השיחה מוכנה להתחלה'}</strong><p>${App.escapeHtml(line)}</p></div></div>`;
+      return;
+    }
+
+    let currentDay = '';
+    host.innerHTML = state.messages.map((message) => {
+      const own = isOwnMessage(message);
+      const dayKey = message.createdAt ? `${message.createdAt.getFullYear()}-${message.createdAt.getMonth()}-${message.createdAt.getDate()}` : 'unknown';
+      const divider = dayKey !== currentDay ? `<div class="chat-day"><span>${App.escapeHtml(formatDayDivider(message.createdAt))}</span></div>` : '';
+      currentDay = dayKey;
+      return `${divider}<div class="message-row ${own ? 'sent' : 'received'}"><article class="message-bubble"><div class="message-body">${App.escapeHtml(message.messageText)}</div><div class="message-meta"><span>${App.escapeHtml(own ? 'אתם' : (message.authorName || 'משתמש'))}</span><span>${App.escapeHtml(formatTime(message.createdAt || new Date()))}</span></div></article></div>`;
+    }).join('');
+    scrollMessages(forceScroll);
+  }
+
+  function updateComposerState() {
+    const input = byId('chatMessageInput');
+    const button = byId('chatSendBtn');
+    if (!(input instanceof HTMLTextAreaElement) || !(button instanceof HTMLButtonElement)) return;
+    button.disabled = state.sending || !String(input.value || '').trim() || !state.activeRoomKey;
+  }
+
+  async function hydrateUser() {
+    try {
+      state.currentUser = await App.getCurrentUser();
+    } catch (error) {
+      state.currentUser = { name: '', email: '', login: '' };
+    }
+    renderSidebarIdentity();
+  }
+
+  async function loadRooms(quiet) {
+    const token = ++state.refreshToken;
+    if (!quiet) setStatus('טוען שיחות...', '');
+    const settingsResult = await App.loadManagementSettings({ preferCache: true });
+    if (token !== state.refreshToken) return;
+    state.settings = settingsResult.settings;
+    state.selection = App.loadSelection();
+    state.currentRoom = buildCurrentRoom();
+    state.customRooms = App.resolveCustomChatRooms(state.settings).map((room) => App.buildCustomChatRoomScope(room)).filter(Boolean);
+    const rows = await App.loadRecentChatEntries(state.settings, { top: 240 });
+    if (token !== state.refreshToken) return;
+    const roomRows = (Array.isArray(rows) ? rows : []).filter((row) => {
+      if (String(row && row.ConversationType || '').trim().toLowerCase() === 'direct') return false;
+      return App.isManagedChatRoomScope(row && row.ScopeKey || '', state.settings);
+    });
+    const directRows = currentId()
+      ? await App.loadRecentChatEntries(state.settings, { top: 160, conversationType: 'direct', participantIdentity: currentId() })
+      : [];
+    if (token !== state.refreshToken) return;
+    state.seedMessages = roomRows.concat(Array.isArray(directRows) ? directRows : []).map(normalizeMessage);
+    state.rooms = buildRooms(state.seedMessages);
+    state.contacts = collectContacts(state.seedMessages.concat(state.messages));
+    if (state.queuedRoomKey && state.rooms.some((room) => room.scopeKey === state.queuedRoomKey)) {
+      state.activeRoomKey = state.queuedRoomKey;
+      state.queuedRoomKey = '';
+    }
+    if (!state.activeRoomKey || !state.rooms.some((room) => room.scopeKey === state.activeRoomKey)) {
+      state.activeRoomKey = state.currentRoom && state.currentRoom.scopeKey
+        ? state.currentRoom.scopeKey
+        : (state.rooms[0] && state.rooms[0].scopeKey || '');
+    }
+    renderContacts();
+    renderRooms();
+    renderHeader();
+  }
+
+  async function loadMessages(quiet, forceScroll) {
+    const room = activeRoom();
+    if (!room) {
+      state.messages = [];
+      renderMessages(forceScroll);
+      return;
+    }
+    if (!quiet) setStatus('טוען הודעות...', '');
+    const rows = await App.loadChatMessages(state.settings, room.scopeKey, { top: 250 });
+    state.messages = rows.map(normalizeMessage);
+    const last = state.messages.length ? state.messages[state.messages.length - 1] : null;
+    const roomRef = state.rooms.find((item) => item.scopeKey === room.scopeKey);
+    if (roomRef && last) {
+      roomRef.lastMessageText = last.messageText;
+      roomRef.lastCreatedAt = last.createdAt;
+    }
+    state.contacts = collectContacts(state.seedMessages.concat(state.messages));
+    renderContacts();
+    renderRooms();
+    renderHeader();
+    renderMessages(forceScroll);
+    setStatus('הצ׳אט מחובר ל-SharePoint.', 'ok');
+  }
+
+  async function refreshChat(options) {
+    try {
+      await loadRooms(!!(options && options.quiet));
+      await loadMessages(!!(options && options.quiet), !!(options && options.forceScroll));
+    } catch (error) {
+      setStatus(error && error.message ? String(error.message) : 'שגיאה בטעינת הצ׳אט.', 'err');
+    } finally {
+      updateComposerState();
+    }
+  }
+
+  function scheduleRefresh() {
+    if (state.refreshTimer) window.clearTimeout(state.refreshTimer);
+    state.refreshTimer = window.setTimeout(async () => {
+      if (!document.hidden) await refreshChat({ quiet: true, forceScroll: false });
+      scheduleRefresh();
+    }, POLL_MS);
+  }
+
+  function activateRoom(room, forceScroll) {
+    if (!room) return;
+    const next = ensureRoom(room) || room;
+    state.activeRoomKey = next.scopeKey;
+    state.messages = [];
+    renderContacts();
+    renderRooms();
+    renderHeader();
+    renderMessages(false);
+    loadMessages(false, !!forceScroll).catch((error) => {
+      setStatus(error && error.message ? String(error.message) : 'שגיאה בטעינת ההודעות.', 'err');
+    });
+  }
+
+  function openDirect(contact) {
+    const room = buildDirectRoom(contact);
+    if (!room) return;
+    activateRoom(room, true);
+  }
+
+  async function sendMessage(event) {
+    event.preventDefault();
+    const input = byId('chatMessageInput');
+    if (!(input instanceof HTMLTextAreaElement)) return;
+    const messageText = String(input.value || '').trim();
+    if (!messageText || state.sending || !state.activeRoomKey) return;
+    state.sending = true;
+    updateComposerState();
+
+    try {
+      if (!App.getUserDisplayName(state.currentUser)) await hydrateUser();
+      const room = activeRoom();
+      const payload = {
+        scopeKey: room.scopeKey,
+        scopeLabel: room.scopeLabel,
+        dateKey: room.dateKey,
+        groupKey: room.groupKey,
+        messageText,
+        authorName: App.getUserDisplayName(state.currentUser),
+        authorEmail: state.currentUser.email,
+        authorLogin: state.currentUser.login
+      };
+      if (room && room.isDirect) {
+        Object.assign(payload, {
+          conversationType: 'direct',
+          participantA: room.participantA,
+          participantB: room.participantB,
+          participantLabel: room.participantLabel,
+          recipientName: room.recipientName || room.roomTitle,
+          recipientEmail: room.recipientEmail || '',
+          recipientLogin: room.recipientLogin || ''
+        });
+      }
+      await App.createChatMessage(state.settings, payload);
+      input.value = '';
+      await refreshChat({ quiet: true, forceScroll: true });
+      setStatus('ההודעה נשלחה.', 'ok');
+    } catch (error) {
+      setStatus(error && error.message ? String(error.message) : 'לא ניתן לשלוח הודעה.', 'err');
+    } finally {
+      state.sending = false;
+      updateComposerState();
+    }
+  }
+
+  function bindEvents() {
+    const refreshBtn = byId('chatRefreshBtn');
+    const roomSearch = byId('chatRoomSearch');
+    const roomList = byId('chatRoomList');
+    const contactList = byId('chatContactList');
+    const composer = byId('chatComposer');
+    const input = byId('chatMessageInput');
+
+    if (refreshBtn) refreshBtn.addEventListener('click', () => { refreshChat({ quiet: false, forceScroll: false }).catch(() => {}); });
+    if (roomSearch) roomSearch.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      state.searchText = String(target.value || '');
+      renderRooms();
+    });
+    if (roomList) roomList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const button = target.closest('button[data-room-key]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      const nextKey = String(button.dataset.roomKey || '').trim();
+      if (!nextKey || nextKey === state.activeRoomKey) return;
+      state.activeRoomKey = nextKey;
+      renderRooms();
+      renderHeader();
+      loadMessages(false, true).catch((error) => {
+        setStatus(error && error.message ? String(error.message) : 'שגיאה בטעינת ההודעות.', 'err');
+      });
+    });
+    if (contactList) contactList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const button = target.closest('button[data-contact-key]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      const identity = String(button.dataset.contactKey || '').trim();
+      const contact = state.contacts.find((item) => item.identity === identity);
+      if (contact) openDirect(contact);
+    });
+    if (composer) composer.addEventListener('submit', sendMessage);
+    if (input) input.addEventListener('input', updateComposerState);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshChat({ quiet: true, forceScroll: false }).catch(() => {});
+    });
+  }
+
+  async function init() {
+    App.initShellSidebar();
+    state.queuedRoomKey = String(App.consumeQueuedChatRoomOpen ? App.consumeQueuedChatRoomOpen() : '').trim();
+    bindEvents();
+    updateComposerState();
+    await hydrateUser();
+    await refreshChat({ quiet: false, forceScroll: false });
+    scheduleRefresh();
+  }
+
+  init().catch((error) => {
+    setStatus(error && error.message ? String(error.message) : 'שגיאה בטעינת הצ׳אט.', 'err');
+  });
+})();
