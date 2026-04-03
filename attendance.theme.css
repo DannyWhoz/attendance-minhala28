@@ -7533,3 +7533,89 @@ body[data-page="attendance"] .table-search input {
 body[data-page="attendance"] .records-toolbar-actions {
   gap: 10px;
 }
+
+/* ============================================================
+   UI Polish: navbar active state, icon sizing, sidebar scroll
+   ============================================================ */
+
+/* Active state for top navbar links (current page indicator) */
+body .qb-navbar-link.active,
+body .qb-navbar-button.active {
+  background: var(--ms-purple-soft);
+  border-color: rgba(91, 45, 142, 0.2);
+  color: var(--ms-purple) !important;
+}
+
+body .qb-navbar-link.active:hover,
+body .qb-navbar-button.active:hover {
+  background: var(--ms-purple-soft);
+  border-color: rgba(91, 45, 142, 0.3);
+}
+
+/* Icon sizing inside navbar links (consistent with sidebar nav icons) */
+body .qb-navbar-link i,
+body .qb-navbar-button i {
+  font-size: 13px;
+  width: 14px;
+  flex: 0 0 14px;
+  color: currentColor;
+}
+
+/* Sidebar should be scrollable if content overflows */
+body .qb-sidebar {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+body .qb-sidepanel {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Smoother sidebar transitions */
+body .qb-sidebar {
+  transition: transform 0.22s ease, opacity 0.22s ease, width 0.22s ease;
+}
+
+/* Slightly tighter rail — cleaner proportions */
+body .qb-rail {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  gap: 6px;
+}
+
+/* Rail active item gets a left accent border */
+body .qb-rail-btn.active,
+body .qb-rail-anchor.active {
+  box-shadow: inset -2px 0 0 rgba(255, 255, 255, 0.5);
+}
+
+/* Navbar burger: slightly crisper focus ring */
+body .qb-burger:focus-visible {
+  outline: 2px solid var(--ms-purple);
+  outline-offset: 2px;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Ensure .qb-main fills properly on all breakpoints */
+body .qb-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Non-attendance pages: add gap between navbar-right items */
+body:not([data-page="attendance"]) .qb-navbar-right {
+  gap: 8px;
+}
+
+/* Content padding refinement for small screens */
+@media (max-width: 640px) {
+  body .qb-content {
+    padding: 12px;
+  }
+  body .qb-navbar {
+    padding: 8px 12px;
+  }
+}

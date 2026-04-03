@@ -2462,20 +2462,285 @@
   </style>
   <link rel="stylesheet" href="attendance.theme.css?v=20260326-45">
   <link rel="stylesheet" href="attendance.chatdock.css?v=20260326-02">
+  <style>
+    /* =====================================================
+       Admin UI Remake — Sidebar Tabs + Section Headers
+       ===================================================== */
+
+    /* Enable + style icons inside sidebar tab buttons */
+    body[data-page="admin"] .admin-side-tab .tab-icon {
+      display: inline-flex !important;
+      width: 26px !important;
+      height: 26px !important;
+      flex: 0 0 26px !important;
+      border-radius: 6px;
+      background: #f3f4f6;
+      color: currentColor;
+      font-size: 12px;
+      margin-inline-start: 0;
+      transition: background 0.14s ease, color 0.14s ease;
+    }
+
+    body[data-page="admin"] .admin-side-tabs {
+      display: grid;
+      gap: 2px;
+      padding: 4px 8px 12px;
+    }
+
+    body[data-page="admin"] .admin-side-tab {
+      justify-content: flex-start !important;
+      gap: 10px !important;
+      min-height: 38px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #606060;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      direction: rtl;
+      text-align: right;
+      transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+    }
+
+    body[data-page="admin"] .admin-side-tab:hover {
+      background: #f5f7fa;
+      color: #1a1a1a;
+      border-color: transparent;
+    }
+
+    body[data-page="admin"] .admin-side-tab:hover .tab-icon {
+      background: #dbeafe;
+      color: #2563eb;
+    }
+
+    body[data-page="admin"] .admin-side-tab.active {
+      background: #eff6ff !important;
+      border-color: #dbeafe !important;
+      color: #1d4ed8 !important;
+      box-shadow: none !important;
+      transform: none !important;
+    }
+
+    body[data-page="admin"] .admin-side-tab.active .tab-icon {
+      background: #dbeafe !important;
+      color: #1d4ed8 !important;
+    }
+
+    /* ---- Section headers ---- */
+
+    body[data-page="admin"] .toolbar {
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    body[data-page="admin"] .toolbar-heading {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    body[data-page="admin"] .admin-section-icon {
+      display: inline-flex;
+      width: 40px;
+      height: 40px;
+      flex: 0 0 40px;
+      border-radius: 10px;
+      align-items: center;
+      justify-content: center;
+      font-size: 17px;
+      background: #eff6ff;
+      border: 1px solid #dbeafe;
+      color: #2563eb;
+      transition: none;
+    }
+
+    /* Per-section accent colors */
+    #adminOperationsSection .admin-section-icon { background: #f5f3ff; border-color: #ede9fe; color: #7c3aed; }
+    #adminCasualtiesSection .admin-section-icon { background: #fef2f2; border-color: #fecaca; color: #dc2626; }
+    #adminDaysSection .admin-section-icon { background: #f0fdf4; border-color: #bbf7d0; color: #059669; }
+    #adminUnitsSection .admin-section-icon { background: #ecfeff; border-color: #a5f3fc; color: #0891b2; }
+    #adminCatalogSection .admin-section-icon,
+    #adminColumnsSection .admin-section-icon,
+    #adminDropdownSection .admin-section-icon,
+    #adminCategoriesSection .admin-section-icon { background: #fffbeb; border-color: #fde68a; color: #d97706; }
+    .graph-studio-builder .admin-section-icon,
+    #dashboardPreviewSection .admin-section-icon { background: #fdf4ff; border-color: #e9d5ff; color: #9333ea; }
+
+    body[data-page="admin"] .admin-section-kicker {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 0 8px;
+      border-radius: 5px;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      color: #6b7280;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+
+    body[data-page="admin"] .toolbar h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.2;
+      color: #111827;
+    }
+
+    /* ---- View toggle (table/cards) ---- */
+
+    body[data-page="admin"] .admin-view-toggle {
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      background: #f9fafb;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+    }
+
+    body[data-page="admin"] .admin-view-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #9ca3af;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.13s ease;
+    }
+
+    body[data-page="admin"] .admin-view-btn:hover {
+      color: #374151;
+      background: rgba(0,0,0,0.04);
+    }
+
+    body[data-page="admin"] .admin-view-btn.active {
+      background: #ffffff;
+      border-color: #e5e7eb;
+      color: #1d4ed8;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
+
+    /* ---- Hero card ---- */
+
+    body[data-page="admin"] .admin-hero-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: start;
+      padding: 24px 28px;
+    }
+
+    body[data-page="admin"] .admin-hero-main {
+      display: grid;
+      gap: 16px;
+    }
+
+    body[data-page="admin"] .admin-hero-side {
+      display: grid;
+      gap: 14px;
+      min-width: 210px;
+    }
+
+    body[data-page="admin"] .admin-hero-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    body[data-page="admin"] .admin-hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 30px;
+      padding: 5px 12px;
+      border-radius: 8px;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      color: #6b7280;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    body[data-page="admin"] .admin-hero-shortcuts {
+      display: grid;
+      gap: 7px;
+    }
+
+    body[data-page="admin"] .admin-hero-link {
+      display: inline-flex;
+      justify-content: flex-start;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid #e5e7eb;
+      background: #ffffff;
+      color: #374151;
+      text-decoration: none;
+      transition: background 0.13s ease, border-color 0.13s ease, color 0.13s ease;
+    }
+
+    body[data-page="admin"] .admin-hero-link:hover {
+      background: #eff6ff;
+      border-color: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    /* Savebar kicker label */
+    body[data-page="admin"] .admin-savebar-kicker {
+      display: block;
+      color: #9ca3af;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    /* Responsive hero */
+    @media (max-width: 860px) {
+      body[data-page="admin"] .admin-hero-card {
+        grid-template-columns: 1fr;
+      }
+      body[data-page="admin"] .admin-hero-side {
+        min-width: 0;
+      }
+    }
+  </style>
 </head>
 <body data-page="admin">
   <div class="qb-shell">
     <aside id="shellSidebar" class="qb-sidebar">
       <div class="qb-rail">
-        <a class="qb-rail-anchor" href="index.html" aria-label="בחירה"><i class="fas fa-border-all" aria-hidden="true"></i></a>
-        <a class="qb-rail-anchor" href="attendance.html" aria-label="נוכחות"><i class="fas fa-calendar-check" aria-hidden="true"></i></a>
-        <a class="qb-rail-anchor" href="chat.html" aria-label="צ'אט"><i class="fas fa-comments" aria-hidden="true"></i></a>
-        <a class="qb-rail-anchor active" href="admin.html" aria-label="ניהול"><i class="fas fa-cog" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="index.html" aria-label="בחירה" title="בחירה"><i class="fas fa-border-all" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="attendance.html" aria-label="נוכחות" title="נוכחות"><i class="fas fa-calendar-check" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor" href="chat.html" aria-label="צ'אט" title="צ'אט"><i class="fas fa-comments" aria-hidden="true"></i></a>
+        <a class="qb-rail-anchor active" href="admin.html" aria-label="ניהול" title="ניהול"><i class="fas fa-cog" aria-hidden="true"></i></a>
         <div class="qb-rail-spacer"></div>
         <div class="qb-rail-avatar" aria-hidden="true">AD</div>
       </div>
       <div class="qb-brand">
-        <div class="qb-brand-mark"><i class="fas fa-layer-group" aria-hidden="true"></i></div>
+        <div class="qb-brand-mark"><i class="fas fa-clipboard-check" aria-hidden="true"></i></div>
         <div class="qb-brand-copy">
           <strong>מערכת נוכחות</strong>
           <span>ניהול מקורות, תאריכים והרשאות</span>
@@ -2519,39 +2784,41 @@
           </div>
         </div>
         <div class="qb-navbar-right">
-          <a class="qb-navbar-link" href="index.html"><span>בחירה</span></a>
-          <a class="qb-navbar-link" href="attendance.html"><span>נוכחות</span></a>
-          <a class="qb-navbar-link" href="chat.html"><span>צ'אט</span></a>
+          <a class="qb-navbar-link" href="index.html"><i class="fas fa-border-all" aria-hidden="true"></i><span>בחירה</span></a>
+          <a class="qb-navbar-link" href="attendance.html"><i class="fas fa-clipboard-list" aria-hidden="true"></i><span>נוכחות</span></a>
+          <a class="qb-navbar-link" href="chat.html"><i class="fas fa-comments" aria-hidden="true"></i><span>צ'אט</span></a>
+          <a class="qb-navbar-link active" href="admin.html"><i class="fas fa-cog" aria-hidden="true"></i><span>ניהול</span></a>
         </div>
       </header>
       <div class="qb-content">
   <div class="app admin-app admin-workbench">
     <section class="card head admin-hero-card">
-        <div class="admin-hero-main">
-          <div class="head-main">
-            <div class="head-icon" aria-hidden="true"><i class="fas fa-sliders-h"></i></div>
-            <div>
-              <span class="admin-eyebrow">מערכת ניהול</span>
-              <h1>מרכז ניהול</h1>
-            </div>
-          </div>
-          <div class="admin-hero-status">
-            <div id="status" class="status">טוען הגדרות...</div>
-          </div>
-          <div id="adminHeroMetrics" class="admin-hero-metrics"></div>
-        </div>
-        <div class="admin-hero-side">
-          <div class="admin-hero-badges" aria-hidden="true">
-            <span class="admin-hero-badge"><i class="fas fa-database"></i><span>רשימות</span></span>
-            <span class="admin-hero-badge"><i class="fas fa-share-alt"></i><span>SharePoint</span></span>
-            <span class="admin-hero-badge"><i class="fas fa-comments"></i><span>חדרי צ'אט</span></span>
-          </div>
-          <div class="admin-hero-shortcuts">
-            <a class="btn light admin-hero-link" href="index.html"><i class="fas fa-border-all" aria-hidden="true"></i><span>בחירת נוכחות</span></a>
-            <a class="btn light admin-hero-link" href="attendance.html"><i class="fas fa-calendar-check" aria-hidden="true"></i><span>נוכחות</span></a>
-            <a class="btn light admin-hero-link" href="chat.html"><i class="fas fa-comments" aria-hidden="true"></i><span>צ'אט</span></a>
+      <div class="admin-hero-main">
+        <div class="head-main">
+          <div class="head-icon" aria-hidden="true"><i class="fas fa-clipboard-check"></i></div>
+          <div>
+            <span class="admin-eyebrow">מערכת ניהול</span>
+            <h1>מרכז ניהול</h1>
           </div>
         </div>
+        <div class="admin-hero-status">
+          <div id="status" class="status">טוען הגדרות...</div>
+        </div>
+        <div id="adminHeroMetrics" class="admin-hero-metrics"></div>
+      </div>
+      <div class="admin-hero-side">
+        <div class="admin-hero-badges" aria-hidden="true">
+          <span class="admin-hero-badge"><i class="fas fa-database"></i><span>רשימות SharePoint</span></span>
+          <span class="admin-hero-badge"><i class="fas fa-comments"></i><span>חדרי צ'אט</span></span>
+          <span class="admin-hero-badge"><i class="fas fa-chart-pie"></i><span>דשבורד</span></span>
+        </div>
+        <div class="admin-hero-shortcuts">
+          <a class="btn light admin-hero-link" href="index.html"><i class="fas fa-border-all" aria-hidden="true"></i><span>בחירת נוכחות</span></a>
+          <a class="btn light admin-hero-link" href="attendance.html"><i class="fas fa-calendar-check" aria-hidden="true"></i><span>נוכחות</span></a>
+          <a class="btn light admin-hero-link" href="chat.html"><i class="fas fa-comments" aria-hidden="true"></i><span>צ'אט</span></a>
+          <a class="btn light admin-hero-link" href="admin-connections.html"><i class="fas fa-link" aria-hidden="true"></i><span>קישוריות מערכת</span></a>
+        </div>
+      </div>
     </section>
 
     <section id="gateCard" class="card admin-gate-card admin-section admin-section-gate">
@@ -2572,9 +2839,12 @@
     <section id="adminPanel" class="hidden admin-panel-stack admin-panel-grid">
       <section id="adminOverviewSection" class="card admin-section admin-section-overview" data-admin-tab="overview">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">סקירה</span>
-            <h2>מצב המערכת</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-chart-column"></i></div>
+            <div>
+              <span class="admin-section-kicker">סקירה</span>
+              <h2>מצב המערכת</h2>
+            </div>
           </div>
         </div>
         <div id="adminOverview" class="admin-overview-grid"></div>
@@ -2586,9 +2856,12 @@
 
       <section id="adminDaysSection" class="card admin-section admin-section-days" data-admin-tab="days">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">זמינות</span>
-            <h2>תאריכים פתוחים</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-calendar-days"></i></div>
+            <div>
+              <span class="admin-section-kicker">זמינות</span>
+              <h2>תאריכים פתוחים</h2>
+            </div>
           </div>
         </div>
         <div class="gate-grid">
@@ -2612,9 +2885,12 @@
 
       <section id="adminCatalogSection" class="card admin-section admin-section-catalog" data-admin-tab="preferences">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">שדות</span>
-            <h2>עמודות זמינות</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-tag"></i></div>
+            <div>
+              <span class="admin-section-kicker">שדות</span>
+              <h2>עמודות זמינות</h2>
+            </div>
           </div>
         </div>
         <div id="catalog" class="chips"></div>
@@ -2622,9 +2898,12 @@
 
       <section id="adminColumnsSection" class="card admin-section admin-section-columns" data-admin-tab="preferences">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">תצוגה</span>
-            <h2>העדפות תצוגה ועריכה</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-sliders"></i></div>
+            <div>
+              <span class="admin-section-kicker">תצוגה</span>
+              <h2>העדפות תצוגה ועריכה</h2>
+            </div>
           </div>
         </div>
         <div class="grid">
@@ -2675,22 +2954,28 @@
 
       <section id="adminDropdownSection" class="card admin-section admin-section-dropdowns" data-admin-tab="preferences">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">טפסים</span>
-            <h2>הגדרות dropdown</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-list-ul"></i></div>
+            <div>
+              <span class="admin-section-kicker">טפסים</span>
+              <h2>הגדרות dropdown</h2>
+            </div>
           </div>
-          <button id="addDropdownConfigBtn" type="button" class="btn light">הוסף dropdown</button>
+          <button id="addDropdownConfigBtn" type="button" class="btn light"><i class="fas fa-plus" aria-hidden="true"></i><span>הוסף dropdown</span></button>
         </div>
         <div id="dropdownConfigs" class="dropdown-list"></div>
       </section>
 
       <section id="adminCategoriesSection" class="card admin-section admin-section-categories" data-admin-tab="preferences">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">בחירה</span>
-            <h2>קטגוריות בחירה למסך הפתיחה</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-folder-open"></i></div>
+            <div>
+              <span class="admin-section-kicker">בחירה</span>
+              <h2>קטגוריות בחירה למסך הפתיחה</h2>
+            </div>
           </div>
-          <button id="addGroupCategoryBtn" type="button" class="btn light">הוסף קטגוריה</button>
+          <button id="addGroupCategoryBtn" type="button" class="btn light"><i class="fas fa-plus" aria-hidden="true"></i><span>הוסף קטגוריה</span></button>
         </div>
         <div id="groupCategoryStatus" class="section-note"></div>
         <div id="groupCategories" class="group-category-list"></div>
@@ -2698,13 +2983,16 @@
 
       <section id="adminUnitsSection" class="card admin-section admin-section-units" data-admin-tab="units">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">יחידות</span>
-            <h2>נכס לאומי</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-users-gear"></i></div>
+            <div>
+              <span class="admin-section-kicker">יחידות</span>
+              <h2>נכס לאומי</h2>
+            </div>
           </div>
           <div class="actions-group">
-            <button id="refreshSourceRecordsBtn" type="button" class="btn light">רענן</button>
-            <button id="importSourceExcelBtn" type="button" class="btn primary">ייבוא קובץ למאגר</button>
+            <button id="refreshSourceRecordsBtn" type="button" class="btn light"><i class="fas fa-rotate-right" aria-hidden="true"></i><span>רענן</span></button>
+            <button id="importSourceExcelBtn" type="button" class="btn primary"><i class="fas fa-file-import" aria-hidden="true"></i><span>ייבוא קובץ למאגר</span></button>
             <input id="importSourceExcelInput" type="file" accept=".xlsx,.xls,.csv,.txt,.tsv" class="visually-hidden">
           </div>
         </div>
@@ -2722,17 +3010,20 @@
 
       <section id="adminOperationsSection" class="card admin-section admin-section-operations" data-admin-tab="operations">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">מבצעים</span>
-            <h2>יומן מבצעים</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-clipboard-list"></i></div>
+            <div>
+              <span class="admin-section-kicker">מבצעים</span>
+              <h2>יומן מבצעים</h2>
+            </div>
           </div>
           <div class="actions-group">
             <div id="operationsViewToggle" class="admin-view-toggle" role="tablist" aria-label="תצוגת יומן מבצעים">
               <button type="button" class="admin-view-btn active" data-module-view="operations" data-view="table" aria-pressed="true"><i class="fas fa-table"></i><span>טבלה</span></button>
               <button type="button" class="admin-view-btn" data-module-view="operations" data-view="cards" aria-pressed="false"><i class="fas fa-id-card"></i><span>כרטיסים</span></button>
             </div>
-            <button id="refreshOperationsBtn" type="button" class="btn light">רענן</button>
-            <button id="addOperationsEntryBtn" type="button" class="btn primary">הוסף אירוע</button>
+            <button id="refreshOperationsBtn" type="button" class="btn light"><i class="fas fa-rotate-right" aria-hidden="true"></i><span>רענן</span></button>
+            <button id="addOperationsEntryBtn" type="button" class="btn primary"><i class="fas fa-plus" aria-hidden="true"></i><span>הוסף אירוע</span></button>
           </div>
         </div>
         <div id="operationsLogMeta" class="section-note"></div>
@@ -2741,17 +3032,20 @@
 
       <section id="adminCasualtiesSection" class="card admin-section admin-section-casualties" data-admin-tab="casualties">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">נפגעים ורכוש</span>
-            <h2>נפגעי רכוש ונפגעים</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-house-damage"></i></div>
+            <div>
+              <span class="admin-section-kicker">נפגעים ורכוש</span>
+              <h2>נפגעי רכוש ונפגעים</h2>
+            </div>
           </div>
           <div class="actions-group">
             <div id="casualtiesViewToggle" class="admin-view-toggle" role="tablist" aria-label="תצוגת נפגעים ורכוש">
               <button type="button" class="admin-view-btn active" data-module-view="casualties" data-view="table" aria-pressed="true"><i class="fas fa-table"></i><span>טבלה</span></button>
               <button type="button" class="admin-view-btn" data-module-view="casualties" data-view="cards" aria-pressed="false"><i class="fas fa-id-card"></i><span>כרטיסים</span></button>
             </div>
-            <button id="refreshCasualtiesBtn" type="button" class="btn light">רענן</button>
-            <button id="addCasualtyEntryBtn" type="button" class="btn primary">הוסף רשומה</button>
+            <button id="refreshCasualtiesBtn" type="button" class="btn light"><i class="fas fa-rotate-right" aria-hidden="true"></i><span>רענן</span></button>
+            <button id="addCasualtyEntryBtn" type="button" class="btn primary"><i class="fas fa-plus" aria-hidden="true"></i><span>הוסף רשומה</span></button>
           </div>
         </div>
         <div id="casualtiesMeta" class="section-note"></div>
@@ -2761,11 +3055,14 @@
       <div id="adminGraphsSection" class="graph-studio-layout" data-admin-tab="graphs">
         <section class="card graph-studio-builder admin-section">
           <div class="toolbar">
-            <div>
-              <span class="admin-section-kicker">דשבורד</span>
-              <h2>הגדרות דשבורד</h2>
+            <div class="toolbar-heading">
+              <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-chart-pie"></i></div>
+              <div>
+                <span class="admin-section-kicker">דשבורד</span>
+                <h2>הגדרות דשבורד</h2>
+              </div>
             </div>
-            <button id="addPresetBtn" type="button" class="btn light">הוסף גרף מותאם</button>
+            <button id="addPresetBtn" type="button" class="btn light"><i class="fas fa-plus" aria-hidden="true"></i><span>הוסף גרף מותאם</span></button>
           </div>
           <div class="widget-gallery">
             <button type="button" class="gallery-btn" data-graph-type="bar"><strong>Bar</strong></button>
@@ -2787,11 +3084,14 @@
 
         <section id="dashboardPreviewSection" class="card graph-studio-preview admin-section">
           <div class="toolbar">
-            <div>
-              <span class="admin-section-kicker">תצוגה מקדימה</span>
-              <h2>תצוגה חיה של הדשבורד</h2>
+            <div class="toolbar-heading">
+              <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-eye"></i></div>
+              <div>
+                <span class="admin-section-kicker">תצוגה מקדימה</span>
+                <h2>תצוגה חיה של הדשבורד</h2>
+              </div>
             </div>
-            <button id="graphPreviewRefreshBtn" type="button" class="btn light">רענן תצוגה</button>
+            <button id="graphPreviewRefreshBtn" type="button" class="btn light"><i class="fas fa-rotate-right" aria-hidden="true"></i><span>רענן תצוגה</span></button>
           </div>
           <div id="dashboardPreviewSummary" class="graph-preview-shell"></div>
           <div id="dashboardPreviewGrid" class="graph-preview-shell"></div>
@@ -2800,11 +3100,14 @@
 
       <section id="adminDashboardSection" class="card admin-section admin-section-dashboard" data-admin-tab="overview">
         <div class="toolbar">
-          <div>
-            <span class="admin-section-kicker">תמונת מצב</span>
-            <h2>דשבורד מנהל</h2>
+          <div class="toolbar-heading">
+            <div class="admin-section-icon" aria-hidden="true"><i class="fas fa-gauge-high"></i></div>
+            <div>
+              <span class="admin-section-kicker">תמונת מצב</span>
+              <h2>דשבורד מנהל</h2>
+            </div>
           </div>
-          <button id="adminDashboardRefreshBtn" type="button" class="btn light">רענן דשבורד</button>
+          <button id="adminDashboardRefreshBtn" type="button" class="btn light"><i class="fas fa-rotate-right" aria-hidden="true"></i><span>רענן דשבורד</span></button>
         </div>
         <div id="adminDashboardSummary" class="graph-preview-shell"></div>
         <div id="adminDashboardGrid" class="graph-preview-shell"></div>
